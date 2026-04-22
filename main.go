@@ -142,7 +142,7 @@ func main() {
 	var line1 []string
 	line1 = append(line1, fmt.Sprintf("%s%s%s", ColorCyan, shortDir, ColorReset))
 	if gitBranch != "" {
-		line1 = append(line1, fmt.Sprintf("%s⚡ %s%s", ColorGreen, gitBranch, ColorReset))
+		line1 = append(line1, fmt.Sprintf("\033[37m⚡ %s%s", gitBranch, ColorReset))
 	}
 	line1 = append(line1, fmt.Sprintf("%s%s%s", ColorPurple, input.Model.DisplayName, ColorReset))
 	if effort != "" {
