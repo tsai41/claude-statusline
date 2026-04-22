@@ -164,13 +164,13 @@ func main() {
 			remaining := 100 - int(rl.UsedPercentage)
 			color := colorByRemaining(remaining)
 			reset := formatResetTime(rl.ResetsAt)
-			line2 = append(line2, fmt.Sprintf("%s5h:%d%%%s%s", color, remaining, reset, ColorReset))
+			line2 = append(line2, fmt.Sprintf("%s5h: %d%%%s%s", color, remaining, reset, ColorReset))
 		}
 		if rl := input.RateLimits.SevenDay; rl != nil {
 			remaining := 100 - int(rl.UsedPercentage)
 			color := colorByRemaining(remaining)
 			reset := formatResetTime(rl.ResetsAt)
-			line2 = append(line2, fmt.Sprintf("%s7d:%d%%%s%s", color, remaining, reset, ColorReset))
+			line2 = append(line2, fmt.Sprintf("%s7d: %d%%%s%s", color, remaining, reset, ColorReset))
 		}
 	}
 	line2 = append(line2, fmt.Sprintf("%s%s%s", ColorDim, totalHours, ColorReset))
