@@ -176,9 +176,9 @@ func main() {
 	line2 = append(line2, fmt.Sprintf("%s%s%s", ColorDim, totalHours, ColorReset))
 	fmt.Println(strings.Join(line2, SEP))
 
-	// third line: special tools only + user message
+	// third line: special tools + last user message
 	if lastTool != "" {
-		fmt.Printf("%s│%s %s\n", ColorDim, ColorReset, lastTool)
+		fmt.Printf("%s│%s tool: %s\n", ColorDim, ColorReset, lastTool)
 	}
 	if userMessage != "" {
 		fmt.Print(userMessage)
