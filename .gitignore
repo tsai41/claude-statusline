@@ -1,0 +1,13 @@
+# OMC / Claude Code local state
+.omc/
+.claude/
+
+# Build output
+statusline-go
+*.exe
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
