@@ -156,7 +156,7 @@ func main() {
 		used := int(input.ContextWindow.UsedPercentage)
 		remaining := 100 - used
 		color := colorByRemaining(remaining)
-		bar := miniBar(remaining)
+		bar := miniBar(used)
 		line2 = append(line2, fmt.Sprintf("%sctx %s %d%%%s", color, bar, used, ColorReset))
 	}
 	if input.RateLimits != nil {
