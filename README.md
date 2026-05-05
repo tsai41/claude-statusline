@@ -38,12 +38,26 @@ Line 3 — activity: special tool calls (Agent / Skill / MCP only), last user me
 
 ## Install
 
+### Option A — pre-built binary (recommended)
+
+Grab the matching tarball from the [Releases page](https://github.com/tsai41/claude-statusline/releases) (`darwin_arm64`, `darwin_amd64`, `linux_arm64`, or `linux_amd64`), extract, and install:
+
+```bash
+tar -xzf claude-statusline_*.tar.gz
+xattr -d com.apple.quarantine ./claude-statusline 2>/dev/null || true   # macOS only
+chmod +x ./claude-statusline
+mkdir -p ~/.claude
+mv ./claude-statusline ~/.claude/statusline-go
+```
+
+### Option B — build from source
+
 ```bash
 chmod +x install.sh
 ./install.sh
 ```
 
-Then add to `~/.claude/settings.json`:
+Either way, add to `~/.claude/settings.json`:
 
 ```json
 "statusLine": {
