@@ -1,5 +1,10 @@
 # claude-statusline
 
+[![CI](https://github.com/tsai41/claude-statusline/actions/workflows/ci.yml/badge.svg)](https://github.com/tsai41/claude-statusline/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tsai41/claude-statusline?display_name=tag&sort=semver)](https://github.com/tsai41/claude-statusline/releases)
+[![License](https://img.shields.io/github/license/tsai41/claude-statusline)](LICENSE)
+[![Go](https://img.shields.io/github/go-mod/go-version/tsai41/claude-statusline)](go.mod)
+
 A Go-based status line for [Claude Code](https://claude.ai/code).
 
 ## Features

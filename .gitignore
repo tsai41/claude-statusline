@@ -4,6 +4,8 @@
 
 # Build output
 statusline-go
+claude-statusline
+/dist/
 *.exe
 
 # OS / editor
