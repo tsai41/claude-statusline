@@ -624,7 +624,7 @@ func isSystemMessage(content string) bool {
 		(strings.HasPrefix(content, "{") && strings.HasSuffix(content, "}")) {
 		return true
 	}
-	for _, tag := range []string{"<local-command-stdout>", "<command-name>", "<command-message>", "<command-args>"} {
+	for _, tag := range []string{"<local-command-stdout>", "<command-name>", "<command-message>", "<command-args>", "<task-notification>", "<task-id>", "<tool-use-id>"} {
 		if strings.Contains(content, tag) {
 			return true
 		}
@@ -636,28 +636,23 @@ func formatUserMessage(message string) string {
 	if message == "" {
 		return ""
 	}
-	maxLines := 3
 	lineWidth := 80
-	lines := strings.Split(message, "\n")
-	var result []string
-	for i, line := range lines {
-		if i >= maxLines {
+	// collapse to first non-empty line only, to keep the status line short
+	line := ""
+	for _, l := range strings.Split(message, "\n") {
+		if strings.TrimSpace(l) != "" {
+			line = strings.TrimSpace(l)
 			break
 		}
-		line = strings.TrimSpace(line)
-		if len([]rune(line)) > lineWidth {
-			runes := []rune(line)
-			line = string(runes[:lineWidth-3]) + "..."
-		}
-		result = append(result, fmt.Sprintf("%s│%s %s", ColorDim, ColorReset, line))
 	}
-	if len(lines) > maxLines {
-		result = append(result, fmt.Sprintf("%s│ +%d lines%s", ColorDim, len(lines)-maxLines, ColorReset))
+	if line == "" {
+		return ""
 	}
-	if len(result) > 0 {
-		return strings.Join(result, "\n") + "\n"
+	if len([]rune(line)) > lineWidth {
+		runes := []rune(line)
+		line = string(runes[:lineWidth-3]) + "..."
 	}
-	return ""
+	return fmt.Sprintf("%s│%s %s\n", ColorDim, ColorReset, line)
 }
 
 func formatNumber(num int) string {
