@@ -280,7 +280,16 @@ func getGitBranch(dir string) string {
 		}
 	}
 
-	result := branch + dirty
+	// linked worktree: --absolute-git-dir points at .../worktrees/<name>
+	wt := ""
+	if out, err := exec.Command("git", "-C", dir, "rev-parse", "--absolute-git-dir").Output(); err == nil {
+		absGitDir := strings.TrimSpace(string(out))
+		if strings.Contains(absGitDir, "/worktrees/") {
+			wt = fmt.Sprintf(" %s(wt) %s\033[37m", ColorGreen, filepath.Base(absGitDir))
+		}
+	}
+
+	result := branch + wt + dirty
 	cacheMutex.Lock()
 	gitBranchCache = result
 	gitBranchExpires = time.Now().Add(5 * time.Second)
