@@ -14,16 +14,16 @@ import (
 )
 
 const (
-	ColorReset = "\033[0m"
-	ColorDim   = "\033[2m"
-	ColorBold  = "\033[1m"
-	ColorGold  = "\033[38;2;195;158;83m"
-	ColorCyan  = "\033[36m"
-	ColorGreen = "\033[32m"
-	ColorRed   = "\033[31m"
+	ColorReset  = "\033[0m"
+	ColorDim    = "\033[2m"
+	ColorBold   = "\033[1m"
+	ColorGold   = "\033[38;2;195;158;83m"
+	ColorCyan   = "\033[36m"
+	ColorGreen  = "\033[32m"
+	ColorRed    = "\033[31m"
 	ColorYellow = "\033[33m"
 	ColorPurple = "\033[1;35m"
-	ColorGray  = "\033[38;2;152;195;121m" // message color
+	ColorGray   = "\033[38;2;152;195;121m" // message color
 
 	SEP = "\033[2m │ \033[0m"
 )
@@ -41,13 +41,13 @@ type ContextWindow struct {
 }
 
 type RateLimit struct {
-	UsedPercentage float64 `json:"used_percentage"`
+	UsedPercentage float64     `json:"used_percentage"`
 	ResetsAt       interface{} `json:"resets_at"`
 }
 
 type RateLimits struct {
-	FiveHour  *RateLimit `json:"five_hour"`
-	SevenDay  *RateLimit `json:"seven_day"`
+	FiveHour *RateLimit `json:"five_hour"`
+	SevenDay *RateLimit `json:"seven_day"`
 }
 
 type Input struct {
@@ -102,19 +102,29 @@ func main() {
 		dir = input.Workspace.CurrentDir
 	}
 
-	results := make(chan Result, 5)
+	results := make(chan Result, 6)
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
 
 	go func() { defer wg.Done(); results <- Result{"git", getGitBranch(dir)} }()
 	go func() { defer wg.Done(); results <- Result{"hours", calculateTotalHours()} }()
-	go func() { defer wg.Done(); results <- Result{"message", extractUserMessage(input.TranscriptPath, input.SessionID)} }()
-	go func() { defer wg.Done(); results <- Result{"tool", extractLastTool(input.TranscriptPath, input.SessionID)} }()
+	go func() {
+		defer wg.Done()
+		results <- Result{"message", extractUserMessage(input.TranscriptPath, input.SessionID)}
+	}()
+	go func() {
+		defer wg.Done()
+		results <- Result{"tool", extractLastTool(input.TranscriptPath, input.SessionID)}
+	}()
 	go func() { defer wg.Done(); results <- Result{"effort", readEffortLevel()} }()
+	go func() {
+		defer wg.Done()
+		results <- Result{"editwt", detectEditWorktree(input.TranscriptPath, input.SessionID)}
+	}()
 
 	go func() { wg.Wait(); close(results) }()
 
-	var gitBranch, totalHours, userMessage, lastTool, effort string
+	var gitBranch, totalHours, userMessage, lastTool, effort, editWorktree string
 	for r := range results {
 		switch r.Type {
 		case "git":
@@ -127,6 +137,8 @@ func main() {
 			lastTool = r.Data.(string)
 		case "effort":
 			effort = r.Data.(string)
+		case "editwt":
+			editWorktree = r.Data.(string)
 		}
 	}
 
@@ -143,6 +155,9 @@ func main() {
 	line1 = append(line1, fmt.Sprintf("%s%s%s", ColorCyan, shortDir, ColorReset))
 	if gitBranch != "" {
 		line1 = append(line1, fmt.Sprintf("\033[37m⚡ %s%s", gitBranch, ColorReset))
+	}
+	if editWorktree != "" {
+		line1 = append(line1, fmt.Sprintf("%s%s%s", ColorCyan, editWorktree, ColorReset))
 	}
 	line1 = append(line1, fmt.Sprintf("%s%s%s", ColorPurple, input.Model.DisplayName, ColorReset))
 	if effort != "" {
@@ -280,16 +295,7 @@ func getGitBranch(dir string) string {
 		}
 	}
 
-	// linked worktree: --absolute-git-dir points at .../worktrees/<name>
-	wt := ""
-	if out, err := exec.Command("git", "-C", dir, "rev-parse", "--absolute-git-dir").Output(); err == nil {
-		absGitDir := strings.TrimSpace(string(out))
-		if strings.Contains(absGitDir, "/worktrees/") {
-			wt = fmt.Sprintf(" %s(wt) %s\033[37m", ColorGreen, filepath.Base(absGitDir))
-		}
-	}
-
-	result := branch + wt + dirty
+	result := branch + dirty
 	cacheMutex.Lock()
 	gitBranchCache = result
 	gitBranchExpires = time.Now().Add(5 * time.Second)
@@ -321,6 +327,78 @@ func readEffortLevel() string {
 	}
 	if effort != "" {
 		return "effort:" + effort
+	}
+	return ""
+}
+
+// worktreeName returns the linked-worktree name for dir, or "" if dir is not
+// inside a linked worktree (main tree or non-repo). A linked worktree's
+// git dir is .../worktrees/<name>.
+func worktreeName(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--absolute-git-dir").Output()
+	if err != nil {
+		return ""
+	}
+	absGitDir := strings.TrimSpace(string(out))
+	if strings.Contains(absGitDir, "/worktrees/") {
+		return filepath.Base(absGitDir)
+	}
+	return ""
+}
+
+// detectEditWorktree reports the linked worktree that the most recent file
+// edit landed in, as "→wt:<name>", or "" if the latest edit was not in a
+// worktree. Source is the transcript, not cwd: it surfaces where work is
+// going when the session itself stays in the main tree.
+func detectEditWorktree(transcriptPath, sessionID string) string {
+	if transcriptPath == "" {
+		return ""
+	}
+	editTools := map[string]bool{"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true}
+
+	lines := readLastLines(transcriptPath, 100)
+	for i := len(lines) - 1; i >= 0; i-- {
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(lines[i]), &data); err != nil {
+			continue
+		}
+		if sidechain, _ := data["isSidechain"].(bool); sidechain {
+			continue
+		}
+		if sid, _ := data["sessionId"].(string); sid != sessionID {
+			continue
+		}
+		if data["type"] != "assistant" {
+			continue
+		}
+		message, ok := data["message"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, ok := message["content"].([]interface{})
+		if !ok {
+			continue
+		}
+		// newest tool_use within the message first
+		for j := len(content) - 1; j >= 0; j-- {
+			c, ok := content[j].(map[string]interface{})
+			if !ok || c["type"] != "tool_use" {
+				continue
+			}
+			if name, _ := c["name"].(string); !editTools[name] {
+				continue
+			}
+			args, _ := c["input"].(map[string]interface{})
+			fp, _ := args["file_path"].(string)
+			if fp == "" {
+				continue
+			}
+			// most recent edit found — decide here and stop
+			if name := worktreeName(filepath.Dir(fp)); name != "" {
+				return "→wt:" + name
+			}
+			return ""
+		}
 	}
 	return ""
 }

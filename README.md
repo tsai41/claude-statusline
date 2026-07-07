@@ -11,6 +11,7 @@ A Go-based status line for [Claude Code](https://claude.ai/code).
 
 - Model name with color (Opus / Sonnet / Haiku)
 - Current directory and git branch with dirty status (`+staged~unstaged`)
+- Worktree indicator (`→wt:name`) when recent edits land in a linked git worktree
 - Context window usage with progress bar
 - Rate limit remaining (5h / 7d) with reset countdown
 - Effort level indicator
@@ -27,7 +28,7 @@ ctx ━━━━━━━┄┄┄ 23% │ 5h:55% (1h22m) │ 7d:92% (19h50m) �
 │ last message you sent...
 ```
 
-Line 1 — location + identity: directory, git branch (with dirty indicator), model, effort level  
+Line 1 — location + identity: directory, git branch (with dirty indicator), worktree edit target (`→wt:name`), model, effort level  
 Line 2 — metrics: context usage, rate limit remaining with reset countdown, session time  
 Line 3 — activity: special tool calls (Agent / Skill / MCP only), last user message
 

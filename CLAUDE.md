@@ -41,7 +41,7 @@ return `string`; **empty string means "hide this segment"** — that's the unive
 convention (`getGitBranch`, `readEffortLevel`, `extractLastTool` all follow it).
 
 **The three lines:**
-- Line 1 — identity: dir, git (`⚡ branch` + `(wt) name` for linked worktrees + `+staged~unstaged` dirty), model, effort
+- Line 1 — identity: dir, git (`⚡ branch` + `+staged~unstaged` dirty), `→wt:name` (worktree where recent edits landed), model, effort
 - Line 2 — metrics: context bar, 5h/7d rate limits with reset countdown, daily session time
 - Line 3 — activity: special tool line (Agent/Skill/MCP only), then last user message
 
@@ -56,11 +56,19 @@ convention (`getGitBranch`, `readEffortLevel`, `extractLastTool` all follow it).
 
 **Git** is derived by shelling out (`git -C dir ...`), never supplied by Claude Code.
 `getGitBranch` gates on `rev-parse --git-dir`, reads branch via `symbolic-ref` (so
-**detached HEAD renders no branch — and no worktree badge**, since the func returns early),
-counts dirty via `status --porcelain`, and detects linked worktrees via
-`rev-parse --absolute-git-dir` containing `/worktrees/`. Result is cached process-wide
-with a 5s TTL (`gitBranchCache`, `cacheMutex`) — the cache has **no dir key**, which is
-safe only because each render is a fresh process handling one dir.
+**detached HEAD renders no branch**, since the func returns early), and counts dirty via
+`status --porcelain`. Result is cached process-wide with a 5s TTL (`gitBranchCache`,
+`cacheMutex`) — the cache has **no dir key**, which is safe only because each render is a
+fresh process handling one dir.
+
+**Worktree segment (`detectEditWorktree`)** is deliberately *not* cwd-driven. Claude Code
+pins the statusline `cwd`/`workspace.current_dir` to the session's launch dir — a Bash
+`cd` never moves it (measured), so a cwd-based "am I in a worktree" badge could never fire
+in the common flow (session stays in main, edits go to a worktree). Instead this scans the
+transcript tail for the newest `Edit`/`Write`/`MultiEdit`/`NotebookEdit` `file_path` and
+resolves it via `worktreeName` (`rev-parse --absolute-git-dir` containing `/worktrees/`).
+It reports `→wt:<name>` only when that latest edit landed in a linked worktree; older edits
+are ignored (most-recent-wins). `worktreeName` is the shared path→worktree resolver.
 
 **Color convention:** ANSI codes are string constants at the top; `modelColors` maps
 substrings (Opus/Sonnet/Haiku) to truecolor. When a segment embeds its own color inside
