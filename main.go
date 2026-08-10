@@ -102,12 +102,11 @@ func main() {
 		dir = input.Workspace.CurrentDir
 	}
 
-	results := make(chan Result, 6)
+	results := make(chan Result, 5)
 	var wg sync.WaitGroup
-	wg.Add(6)
+	wg.Add(5)
 
 	go func() { defer wg.Done(); results <- Result{"git", getGitBranch(dir)} }()
-	go func() { defer wg.Done(); results <- Result{"hours", calculateTotalHours()} }()
 	go func() {
 		defer wg.Done()
 		results <- Result{"message", extractUserMessage(input.TranscriptPath, input.SessionID)}
@@ -124,13 +123,11 @@ func main() {
 
 	go func() { wg.Wait(); close(results) }()
 
-	var gitBranch, totalHours, userMessage, lastTool, effort, editWorktree string
+	var gitBranch, userMessage, lastTool, effort, editWorktree string
 	for r := range results {
 		switch r.Type {
 		case "git":
 			gitBranch = r.Data.(string)
-		case "hours":
-			totalHours = r.Data.(string)
 		case "message":
 			userMessage = r.Data.(string)
 		case "tool":
@@ -165,7 +162,19 @@ func main() {
 	}
 	fmt.Println(strings.Join(line1, SEP))
 
-	// line 2: ctx │ rate limits │ time
+	// line 2: ctx │ rate limits
+	fmt.Println(formatMetricsLine(input))
+
+	// third line: special tools + last user message
+	if lastTool != "" {
+		fmt.Printf("%s│%s tool: %s\n", ColorDim, ColorReset, lastTool)
+	}
+	if userMessage != "" {
+		fmt.Print(userMessage)
+	}
+}
+
+func formatMetricsLine(input Input) string {
 	var line2 []string
 	if input.ContextWindow != nil {
 		used := int(input.ContextWindow.UsedPercentage)
@@ -188,16 +197,7 @@ func main() {
 			line2 = append(line2, fmt.Sprintf("%s7d: %d%%%s%s%s%s", color, remaining, ColorReset, ColorDim, reset, ColorReset))
 		}
 	}
-	line2 = append(line2, fmt.Sprintf("%s%s%s", ColorDim, totalHours, ColorReset))
-	fmt.Println(strings.Join(line2, SEP))
-
-	// third line: special tools + last user message
-	if lastTool != "" {
-		fmt.Printf("%s│%s tool: %s\n", ColorDim, ColorReset, lastTool)
-	}
-	if userMessage != "" {
-		fmt.Print(userMessage)
-	}
+	return strings.Join(line2, SEP)
 }
 
 // formatResetTime returns the time until reset, or "" if unavailable/past.
@@ -599,62 +599,6 @@ func updateSession(sessionID string) {
 	if data, err := json.Marshal(session); err == nil {
 		os.WriteFile(sessionFile, data, 0644)
 	}
-}
-
-func calculateTotalHours() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "0m"
-	}
-
-	sessionsDir := filepath.Join(homeDir, ".claude", "session-tracker", "sessions")
-	entries, err := os.ReadDir(sessionsDir)
-	if err != nil {
-		return "0m"
-	}
-
-	var totalSeconds int64
-	activeSessions := 0
-	today := time.Now().Format("2006-01-02")
-	currentTime := time.Now().Unix()
-
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(sessionsDir, entry.Name()))
-		if err != nil {
-			continue
-		}
-		var session Session
-		if err := json.Unmarshal(data, &session); err != nil {
-			continue
-		}
-		if session.Date == today {
-			totalSeconds += session.TotalSeconds
-			if currentTime-session.LastHeartbeat < 600 {
-				activeSessions++
-			}
-		}
-	}
-
-	hours := totalSeconds / 3600
-	minutes := (totalSeconds % 3600) / 60
-
-	var timeStr string
-	if hours > 0 {
-		timeStr = fmt.Sprintf("%dh", hours)
-		if minutes > 0 {
-			timeStr += fmt.Sprintf("%dm", minutes)
-		}
-	} else {
-		timeStr = fmt.Sprintf("%dm", minutes)
-	}
-
-	if activeSessions > 1 {
-		return fmt.Sprintf("%s [%d sessions]", timeStr, activeSessions)
-	}
-	return timeStr
 }
 
 func readLastLines(path string, n int) []string {
