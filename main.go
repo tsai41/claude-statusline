@@ -200,7 +200,7 @@ func main() {
 	}
 }
 
-// formatResetTime returns " (Xh Ym)" string until the reset time, or "" if unavailable/past.
+// formatResetTime returns the time until reset, or "" if unavailable/past.
 func formatResetTime(resetsAt interface{}) string {
 	var t time.Time
 	switch v := resetsAt.(type) {
@@ -218,12 +218,24 @@ func formatResetTime(resetsAt interface{}) string {
 	if d <= 0 {
 		return ""
 	}
+	return " (" + formatResetDuration(d) + ")"
+}
+
+func formatResetDuration(d time.Duration) string {
+	days := int(d / (24 * time.Hour))
+	if days > 0 {
+		hours := int(d/time.Hour) % 24
+		if hours == 0 {
+			return fmt.Sprintf("%dd", days)
+		}
+		return fmt.Sprintf("%dd%dh", days, hours)
+	}
 	h := int(d.Hours())
 	m := int(d.Minutes()) % 60
 	if h > 0 {
-		return fmt.Sprintf(" (%dh%dm)", h, m)
+		return fmt.Sprintf("%dh%dm", h, m)
 	}
-	return fmt.Sprintf(" (%dm)", m)
+	return fmt.Sprintf("%dm", m)
 }
 
 // colorByRemaining returns color based on remaining percentage (green≥50, yellow 21-49, red≤20)
