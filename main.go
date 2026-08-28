@@ -102,9 +102,9 @@ func main() {
 		dir = input.Workspace.CurrentDir
 	}
 
-	results := make(chan Result, 5)
+	results := make(chan Result, 6)
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
 
 	go func() { defer wg.Done(); results <- Result{"git", getGitBranch(dir)} }()
 	go func() {
@@ -120,10 +120,11 @@ func main() {
 		defer wg.Done()
 		results <- Result{"editwt", detectEditWorktree(input.TranscriptPath, input.SessionID)}
 	}()
+	go func() { defer wg.Done(); results <- Result{"account", readAccountTag()} }()
 
 	go func() { wg.Wait(); close(results) }()
 
-	var gitBranch, userMessage, lastTool, effort, editWorktree string
+	var gitBranch, userMessage, lastTool, effort, editWorktree, account string
 	for r := range results {
 		switch r.Type {
 		case "git":
@@ -136,6 +137,8 @@ func main() {
 			effort = r.Data.(string)
 		case "editwt":
 			editWorktree = r.Data.(string)
+		case "account":
+			account = r.Data.(string)
 		}
 	}
 
@@ -162,8 +165,8 @@ func main() {
 	}
 	fmt.Println(strings.Join(line1, SEP))
 
-	// line 2: ctx │ rate limits
-	fmt.Println(formatMetricsLine(input))
+	// line 2: account │ ctx │ rate limits
+	fmt.Println(formatMetricsLine(input, account))
 
 	// third line: special tools + last user message
 	if lastTool != "" {
@@ -174,8 +177,11 @@ func main() {
 	}
 }
 
-func formatMetricsLine(input Input) string {
+func formatMetricsLine(input Input, account string) string {
 	var line2 []string
+	if account != "" {
+		line2 = append(line2, fmt.Sprintf("%s%s%s", ColorGold, account, ColorReset))
+	}
 	if input.ContextWindow != nil {
 		used := int(input.ContextWindow.UsedPercentage)
 		remaining := 100 - used
@@ -314,6 +320,44 @@ func getGitBranch(dir string) string {
 	cacheMutex.Unlock()
 
 	return result
+}
+
+// readAccountTag returns the first 3 characters of the logged-in account's email
+// local part, or "" when hidden via STATUSLINE_ACCOUNT or unavailable.
+func readAccountTag() string {
+	switch strings.ToLower(os.Getenv("STATUSLINE_ACCOUNT")) {
+	case "0", "false", "off", "no":
+		return ""
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	f, err := os.Open(filepath.Join(homeDir, ".claude.json"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	var cfg struct {
+		OAuthAccount struct {
+			EmailAddress string `json:"emailAddress"`
+		} `json:"oauthAccount"`
+	}
+	if err := json.NewDecoder(f).Decode(&cfg); err != nil {
+		return ""
+	}
+
+	local, _, ok := strings.Cut(cfg.OAuthAccount.EmailAddress, "@")
+	if !ok || local == "" {
+		return ""
+	}
+	if r := []rune(local); len(r) > 3 {
+		return string(r[:3])
+	}
+	return local
 }
 
 func readEffortLevel() string {

@@ -17,7 +17,7 @@ A Go-based status line for [Claude Code](https://claude.ai/code).
 - Effort level indicator
 - Special tool usage (Agent, Skill, MCP only)
 - Last user message preview
-- Daily session time tracking
+- Account tag (first 3 chars before `@`; hide with `STATUSLINE_ACCOUNT=0`)
 
 ## Preview
 
@@ -29,7 +29,7 @@ ctx ━━━━━━━┄┄┄ 23% │ 5h:55% (1h22m) │ 7d:92% (19h50m) �
 ```
 
 Line 1 — location + identity: directory, git branch (with dirty indicator), worktree edit target (`→wt:name`), model, effort level  
-Line 2 — metrics: context usage, rate limit remaining with reset countdown, session time  
+Line 2 — metrics: account tag, context usage, rate limit remaining with reset countdown  
 Line 3 — activity: special tool calls (Agent / Skill / MCP only), last user message
 
 ## Requirements

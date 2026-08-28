@@ -42,14 +42,16 @@ convention (`getGitBranch`, `readEffortLevel`, `extractLastTool` all follow it).
 
 **The three lines:**
 - Line 1 — identity: dir, git (`⚡ branch` + `+staged~unstaged` dirty), `→wt:name` (worktree where recent edits landed), model, effort
-- Line 2 — metrics: context bar, 5h/7d rate limits with reset countdown, daily session time
+- Line 2 — metrics: account tag (first 3 chars of the email local part, hidden by `STATUSLINE_ACCOUNT=0`), context bar, 5h/7d rate limits with reset countdown
 - Line 3 — activity: special tool line (Agent/Skill/MCP only), then last user message
 
-**Two JSON sources, do not conflate them:**
+**Three JSON sources, do not conflate them:**
 1. `Input` struct (`main.go` top) models the **stdin** contract from Claude Code. To
    consume a new stdin field, add it here first — unmodeled fields (e.g.
    `workspace.project_dir`) are silently dropped.
-2. `extractLastTool` / `extractUserMessage` parse the **transcript JSONL** file
+2. `readAccountTag` reads `~/.claude.json` (Claude Code's own config, not stdin) for
+   `oauthAccount.emailAddress`; `readEffortLevel` reads `~/.claude/settings.json`.
+3. `extractLastTool` / `extractUserMessage` parse the **transcript JSONL** file
    (`input.transcript_path`) as `map[string]interface{}`, scanning lines bottom-up and
    filtering on `isSidechain == false` and `sessionId == <this session>` so subagent
    noise and cross-session bleed are excluded.
