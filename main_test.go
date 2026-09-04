@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -179,6 +180,304 @@ func writeAccountConfig(t *testing.T, path, email string) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestNormalizeResetsAt(t *testing.T) {
+	tests := []struct {
+		name string
+		in   interface{}
+		want string
+		ok   bool
+	}{
+		{name: "unix timestamp", in: float64(1767513600), want: "2026-01-04T08:00:00Z", ok: true},
+		{name: "rfc3339 string already utc", in: "2026-09-05T02:00:00Z", want: "2026-09-05T02:00:00Z", ok: true},
+		{name: "rfc3339 with offset normalizes to utc", in: "2026-09-05T10:00:00+08:00", want: "2026-09-05T02:00:00Z", ok: true},
+		{name: "unparseable string", in: "not-a-time", want: "", ok: false},
+		{name: "unexpected type", in: true, want: "", ok: false},
+		{name: "nil", in: nil, want: "", ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := normalizeResetsAt(tt.in)
+			if got != tt.want || ok != tt.ok {
+				t.Fatalf("normalizeResetsAt(%v) = (%q, %v), want (%q, %v)", tt.in, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestBuildUsageSnapshotOmitsMissingWindow(t *testing.T) {
+	now := time.Date(2026, 9, 4, 7, 12, 33, 0, time.UTC)
+	rateLimits := &RateLimits{FiveHour: &RateLimit{UsedPercentage: 55}}
+
+	snapshot := buildUsageSnapshot("/home/orli/.claude", rateLimits, now)
+
+	if snapshot.FiveHour == nil || snapshot.FiveHour.UsedPercentage != 55 {
+		t.Fatalf("snapshot.FiveHour = %+v, want UsedPercentage 55", snapshot.FiveHour)
+	}
+	if snapshot.SevenDay != nil {
+		t.Fatalf("snapshot.SevenDay = %+v, want nil", snapshot.SevenDay)
+	}
+
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "seven_day") {
+		t.Fatalf("marshaled snapshot = %s, must omit seven_day key", data)
+	}
+}
+
+func TestUsageSnapshotPathIsStableAndCollisionFree(t *testing.T) {
+	dir := t.TempDir()
+
+	// Naive "replace / with _" would collide these two distinct paths;
+	// the hash must not.
+	a := usageSnapshotPath(dir, "/a/b_c")
+	b := usageSnapshotPath(dir, "/a_b/c")
+	if a == b {
+		t.Fatalf("usageSnapshotPath collided for /a/b_c and /a_b/c: both = %q", a)
+	}
+
+	again := usageSnapshotPath(dir, "/a/b_c")
+	if again != a {
+		t.Fatalf("usageSnapshotPath(%q) = %q then %q, want stable filename", "/a/b_c", a, again)
+	}
+}
+
+func TestWriteFileAtomicLeavesNoTempFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "snapshot.json")
+
+	writeFileAtomic(dir, path, []byte(`{"version":1}`))
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "snapshot.json" {
+		t.Fatalf("dir entries = %v, want exactly [snapshot.json]", entries)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("file mode = %o, want 0600", perm)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"version":1}` {
+		t.Fatalf("file content = %q, want %q", got, `{"version":1}`)
+	}
+}
+
+func TestShouldSkipUsageWrite(t *testing.T) {
+	tests := []struct {
+		name     string
+		prevBody string // "" means no previous file
+		want     bool
+	}{
+		{
+			name:     "no previous snapshot",
+			prevBody: "",
+			want:     false,
+		},
+		{
+			name:     "unchanged and written recently",
+			prevBody: usageSnapshotJSON(t, 55, time.Now().Add(-5*time.Second)),
+			want:     true,
+		},
+		{
+			name:     "unchanged but written over 30s ago",
+			prevBody: usageSnapshotJSON(t, 55, time.Now().Add(-31*time.Second)),
+			want:     false,
+		},
+		{
+			name:     "changed value written recently",
+			prevBody: usageSnapshotJSON(t, 60, time.Now().Add(-5*time.Second)),
+			want:     false,
+		},
+		{
+			name:     "corrupt previous file",
+			prevBody: "{not json",
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "snapshot.json")
+			if tt.prevBody != "" {
+				if err := os.WriteFile(path, []byte(tt.prevBody), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			snapshot := buildUsageSnapshot("/home/orli/.claude", &RateLimits{
+				FiveHour: &RateLimit{UsedPercentage: 55},
+			}, time.Now())
+
+			if got := shouldSkipUsageWrite(path, snapshot); got != tt.want {
+				t.Fatalf("shouldSkipUsageWrite() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// usageSnapshotJSON renders a minimal previous-snapshot file body with a
+// single five_hour window, for feeding the throttle comparison directly.
+func usageSnapshotJSON(t *testing.T, fiveHourUsed float64, checkedAt time.Time) string {
+	t.Helper()
+	snapshot := UsageSnapshot{
+		Version:   1,
+		ConfigDir: "/home/orli/.claude",
+		CheckedAt: checkedAt.UTC().Format(time.RFC3339),
+		FiveHour:  &UsageWindow{UsedPercentage: fiveHourUsed},
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestWriteUsageSnapshot(t *testing.T) {
+	setupUsageEnv := func(t *testing.T, usageDir string) {
+		t.Helper()
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		configDir := filepath.Join(home, ".claude-4")
+		if err := os.MkdirAll(configDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+		t.Setenv("STATUSLINE_USAGE_DIR", usageDir)
+	}
+
+	t.Run("disabled when env var unset", func(t *testing.T) {
+		usageDir := t.TempDir()
+		setupUsageEnv(t, usageDir)
+		t.Setenv("STATUSLINE_USAGE_DIR", "")
+
+		writeUsageSnapshot(Input{RateLimits: &RateLimits{FiveHour: &RateLimit{UsedPercentage: 55}}})
+
+		assertDirEmpty(t, usageDir)
+	})
+
+	t.Run("skips when input carries no rate_limits", func(t *testing.T) {
+		usageDir := t.TempDir()
+		setupUsageEnv(t, usageDir)
+
+		writeUsageSnapshot(Input{})
+
+		assertDirEmpty(t, usageDir)
+	})
+
+	t.Run("writes both windows and omits unparseable resets_at", func(t *testing.T) {
+		usageDir := t.TempDir()
+		setupUsageEnv(t, usageDir)
+
+		writeUsageSnapshot(Input{RateLimits: &RateLimits{
+			FiveHour: &RateLimit{UsedPercentage: 55, ResetsAt: "2026-09-04T09:22:00Z"},
+			SevenDay: &RateLimit{UsedPercentage: 92, ResetsAt: "garbage"},
+		}})
+
+		var got UsageSnapshot
+		readSoleUsageFile(t, usageDir, &got)
+
+		if got.Version != 1 {
+			t.Fatalf("Version = %d, want 1", got.Version)
+		}
+		if _, err := time.Parse(time.RFC3339, got.CheckedAt); err != nil {
+			t.Fatalf("CheckedAt = %q, not RFC3339: %v", got.CheckedAt, err)
+		}
+		if got.FiveHour == nil || got.FiveHour.ResetsAt != "2026-09-04T09:22:00Z" {
+			t.Fatalf("FiveHour = %+v, want ResetsAt 2026-09-04T09:22:00Z", got.FiveHour)
+		}
+		if got.SevenDay == nil || got.SevenDay.ResetsAt != "" {
+			t.Fatalf("SevenDay = %+v, want empty ResetsAt for unparseable input", got.SevenDay)
+		}
+	})
+
+	t.Run("throttles unchanged writes within 30s, writes again once changed", func(t *testing.T) {
+		usageDir := t.TempDir()
+		setupUsageEnv(t, usageDir)
+
+		writeUsageSnapshot(Input{RateLimits: &RateLimits{FiveHour: &RateLimit{UsedPercentage: 55}}})
+		var first UsageSnapshot
+		path := readSoleUsageFile(t, usageDir, &first)
+
+		writeUsageSnapshot(Input{RateLimits: &RateLimits{FiveHour: &RateLimit{UsedPercentage: 55}}})
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var second UsageSnapshot
+		if err := json.Unmarshal(data, &second); err != nil {
+			t.Fatal(err)
+		}
+		if second.CheckedAt != first.CheckedAt {
+			t.Fatalf("CheckedAt changed on unchanged/recent write: %q -> %q", first.CheckedAt, second.CheckedAt)
+		}
+
+		writeUsageSnapshot(Input{RateLimits: &RateLimits{FiveHour: &RateLimit{UsedPercentage: 60}}})
+		var third UsageSnapshot
+		readSoleUsageFile(t, usageDir, &third)
+		if third.FiveHour == nil || third.FiveHour.UsedPercentage != 60 {
+			t.Fatalf("FiveHour = %+v, want UsedPercentage 60 after a changed value", third.FiveHour)
+		}
+	})
+
+	t.Run("does not break when the usage dir is unwritable", func(t *testing.T) {
+		usageDir := filepath.Join(t.TempDir(), "does", "not", "exist")
+		setupUsageEnv(t, usageDir)
+
+		writeUsageSnapshot(Input{RateLimits: &RateLimits{FiveHour: &RateLimit{UsedPercentage: 55}}})
+
+		if _, err := os.Stat(usageDir); !os.IsNotExist(err) {
+			t.Fatalf("usage dir should remain absent, stat err = %v", err)
+		}
+	})
+}
+
+func assertDirEmpty(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("dir entries = %v, want none", entries)
+	}
+}
+
+// readSoleUsageFile expects exactly one file in dir, decodes it into out,
+// and returns its path.
+func readSoleUsageFile(t *testing.T, dir string, out *UsageSnapshot) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("dir entries = %v, want exactly one usage file", entries)
+	}
+	path := filepath.Join(dir, entries[0].Name())
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func writeCcsRegistry(t *testing.T, home, accountHome, alias string) {

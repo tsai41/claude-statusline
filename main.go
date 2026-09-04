@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -83,6 +85,24 @@ type Result struct {
 	Data interface{}
 }
 
+// UsageWindow is one rate-limit window in the published usage-snapshot
+// contract; ResetsAt is omitted rather than a zero value when the input
+// could not be normalized into RFC3339.
+type UsageWindow struct {
+	UsedPercentage float64 `json:"used_percentage"`
+	ResetsAt       string  `json:"resets_at,omitempty"`
+}
+
+// UsageSnapshot is the STATUSLINE_USAGE_DIR file contract; other programs
+// key their reads on ConfigDir, so its shape and field names are fixed.
+type UsageSnapshot struct {
+	Version   int          `json:"version"`
+	ConfigDir string       `json:"config_dir"`
+	CheckedAt string       `json:"checked_at"`
+	FiveHour  *UsageWindow `json:"five_hour,omitempty"`
+	SevenDay  *UsageWindow `json:"seven_day,omitempty"`
+}
+
 var (
 	gitBranchCache   string
 	gitBranchExpires time.Time
@@ -104,7 +124,7 @@ func main() {
 
 	results := make(chan Result, 6)
 	var wg sync.WaitGroup
-	wg.Add(6)
+	wg.Add(7)
 
 	go func() { defer wg.Done(); results <- Result{"git", getGitBranch(dir)} }()
 	go func() {
@@ -121,6 +141,7 @@ func main() {
 		results <- Result{"editwt", detectEditWorktree(input.TranscriptPath, input.SessionID)}
 	}()
 	go func() { defer wg.Done(); results <- Result{"account", readAccountTag()} }()
+	go func() { defer wg.Done(); writeUsageSnapshot(input) }()
 
 	go func() { wg.Wait(); close(results) }()
 
@@ -465,6 +486,137 @@ func readEffortLevel() string {
 		return "effort:" + effort
 	}
 	return ""
+}
+
+// writeUsageSnapshot records the account's rate-limit usage to
+// STATUSLINE_USAGE_DIR for another program to read, since a live status
+// line render is the only place this data ever appears. Every failure path
+// (unset var, no rate_limits, unwritable dir, marshal error) is a silent
+// no-op — this must never affect what the status line prints.
+func writeUsageSnapshot(input Input) {
+	dir := os.Getenv("STATUSLINE_USAGE_DIR")
+	if dir == "" || input.RateLimits == nil {
+		return
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	configDir := claudeConfigDir(homeDir)
+
+	snapshot := buildUsageSnapshot(configDir, input.RateLimits, time.Now())
+	path := usageSnapshotPath(dir, configDir)
+	if shouldSkipUsageWrite(path, snapshot) {
+		return
+	}
+
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return
+	}
+	writeFileAtomic(dir, path, data)
+}
+
+func buildUsageSnapshot(configDir string, rateLimits *RateLimits, now time.Time) UsageSnapshot {
+	snapshot := UsageSnapshot{
+		Version:   1,
+		ConfigDir: configDir,
+		CheckedAt: now.UTC().Format(time.RFC3339),
+	}
+	if rateLimits.FiveHour != nil {
+		snapshot.FiveHour = usageWindowFrom(rateLimits.FiveHour)
+	}
+	if rateLimits.SevenDay != nil {
+		snapshot.SevenDay = usageWindowFrom(rateLimits.SevenDay)
+	}
+	return snapshot
+}
+
+func usageWindowFrom(rl *RateLimit) *UsageWindow {
+	window := &UsageWindow{UsedPercentage: rl.UsedPercentage}
+	if resetsAt, ok := normalizeResetsAt(rl.ResetsAt); ok {
+		window.ResetsAt = resetsAt
+	}
+	return window
+}
+
+// normalizeResetsAt converts a rate-limit reset value — a unix timestamp or
+// an RFC3339 string, since Claude Code sends this field inconsistently —
+// into an RFC3339 UTC string. ok is false when the value is absent or in a
+// shape neither branch recognizes, so the caller can omit it instead of
+// inventing a time.
+func normalizeResetsAt(resetsAt interface{}) (string, bool) {
+	switch v := resetsAt.(type) {
+	case float64:
+		return time.Unix(int64(v), 0).UTC().Format(time.RFC3339), true
+	case string:
+		if parsed, err := time.Parse(time.RFC3339, v); err == nil {
+			return parsed.UTC().Format(time.RFC3339), true
+		}
+	}
+	return "", false
+}
+
+// usageSnapshotPath derives a stable, filesystem-safe filename from
+// configDir. Hashing (not just sanitizing separators) is what makes two
+// different config dirs collision-free: replacing "/" with another
+// character can map distinct paths to the same string, a hash cannot.
+func usageSnapshotPath(dir, configDir string) string {
+	sum := sha256.Sum256([]byte(configDir))
+	return filepath.Join(dir, hex.EncodeToString(sum[:])+".json")
+}
+
+// shouldSkipUsageWrite implements the throttle: skip when the previous
+// snapshot at path already reflects the same windows and was written under
+// 30 seconds ago. Any read/parse failure means there is nothing to compare
+// against, so the write proceeds.
+func shouldSkipUsageWrite(path string, snapshot UsageSnapshot) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var prev UsageSnapshot
+	if err := json.Unmarshal(data, &prev); err != nil {
+		return false
+	}
+	if !usageWindowEqual(prev.FiveHour, snapshot.FiveHour) || !usageWindowEqual(prev.SevenDay, snapshot.SevenDay) {
+		return false
+	}
+	checkedAt, err := time.Parse(time.RFC3339, prev.CheckedAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(checkedAt) < 30*time.Second
+}
+
+func usageWindowEqual(a, b *UsageWindow) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// writeFileAtomic writes data to path via a temp file in dir followed by a
+// rename, so a concurrent reader never observes a partial write. Mode 0600
+// comes from os.CreateTemp's default, not an explicit chmod.
+func writeFileAtomic(dir, path string, data []byte) {
+	tmp, err := os.CreateTemp(dir, ".usage-*.tmp")
+	if err != nil {
+		return
+	}
+	tmpPath := tmp.Name()
+
+	_, writeErr := tmp.Write(data)
+	closeErr := tmp.Close()
+	if writeErr != nil || closeErr != nil {
+		os.Remove(tmpPath)
+		return
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+	}
 }
 
 // worktreeName returns the linked-worktree name for dir, or "" if dir is not
