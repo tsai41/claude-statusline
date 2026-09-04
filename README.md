@@ -134,12 +134,13 @@ Either way, add to `~/.claude/settings.json`:
 ```
 
 To also enable usage snapshots, pass `--usage-dir` right in the command
-string:
+string. The path below is where [ccs](https://github.com/tsai41/agent-conversation-handoff)
+looks by default, so the two need no further configuration to meet:
 
 ```json
 "statusLine": {
   "type": "command",
-  "command": "~/.claude/statusline-go --usage-dir ~/.claude/usage",
+  "command": "~/.claude/statusline-go --usage-dir ~/.config/agent-conversation-handoff/usage",
   "padding": 0
 }
 ```
