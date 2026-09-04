@@ -147,6 +147,32 @@ func TestReadAccountTagFallsBackToTheEmailForAnUnregisteredHome(t *testing.T) {
 	}
 }
 
+// STATUSLINE_ACCOUNT_REGISTRY lets the program read someone else's roster
+// of accounts instead of the ccs default.
+func TestReadAccountTagHonorsRegistryOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("STATUSLINE_ACCOUNT", "")
+	configDir := filepath.Join(home, ".claude-4")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	writeAccountConfig(t, filepath.Join(configDir, ".claude.json"), "orli.zhao@stranity.com")
+
+	registryDir := t.TempDir()
+	registryPath := filepath.Join(registryDir, "roster.json")
+	body := fmt.Sprintf(`{"version":1,"accounts":[{"id":"claude-4","provider":"claude","number":4,"home":%q,"alias":"orli"}]}`, configDir)
+	if err := os.WriteFile(registryPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STATUSLINE_ACCOUNT_REGISTRY", registryPath)
+
+	if got := readAccountTag(); got != "#4 orli" {
+		t.Fatalf("readAccountTag() = %q, want %q", got, "#4 orli")
+	}
+}
+
 func writeAccountConfig(t *testing.T, path, email string) {
 	t.Helper()
 	body := fmt.Sprintf(`{"oauthAccount":{"emailAddress":%q},"projects":{}}`, email)

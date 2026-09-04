@@ -338,10 +338,7 @@ func readAccountTag() string {
 		return ""
 	}
 
-	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
-	if configDir == "" {
-		configDir = filepath.Join(homeDir, ".claude")
-	}
+	configDir := claudeConfigDir(homeDir)
 	if tag := registryAccountTag(homeDir, configDir); tag != "" {
 		return tag
 	}
@@ -354,7 +351,7 @@ func readAccountTag() string {
 // differently (a symlink, a case-insensitive volume, a trailing slash) and
 // a missed match would silently label the session as somebody else.
 func registryAccountTag(homeDir, configDir string) string {
-	raw, err := os.ReadFile(filepath.Join(homeDir, ".config", "agent-conversation-handoff", "accounts.json"))
+	raw, err := os.ReadFile(accountRegistryPath(homeDir))
 	if err != nil {
 		return ""
 	}
@@ -387,6 +384,24 @@ func registryAccountTag(homeDir, configDir string) string {
 		return fmt.Sprintf("#%d %s", account.Number, account.Alias)
 	}
 	return ""
+}
+
+// accountRegistryPath is the ccs registry file naming known accounts,
+// overridable via STATUSLINE_ACCOUNT_REGISTRY so this program reads a
+// roster of accounts rather than presuming whose roster it is.
+func accountRegistryPath(homeDir string) string {
+	if path := os.Getenv("STATUSLINE_ACCOUNT_REGISTRY"); path != "" {
+		return path
+	}
+	return filepath.Join(homeDir, ".config", "agent-conversation-handoff", "accounts.json")
+}
+
+// claudeConfigDir honors CLAUDE_CONFIG_DIR, defaulting to homeDir/.claude.
+func claudeConfigDir(homeDir string) string {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(homeDir, ".claude")
 }
 
 // accountConfigPath finds the config document holding oauthAccount. A
