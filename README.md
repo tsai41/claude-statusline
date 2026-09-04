@@ -45,7 +45,9 @@ Line 3 — activity: special tool calls (Agent / Skill / MCP only), last user me
 
 Rate-limit usage is only ever sent to a live status line render — there is no
 API to query it otherwise. Setting `STATUSLINE_USAGE_DIR` makes this the one
-place that data gets captured, as a JSON file per account:
+place that data gets captured, as a JSON file per account. The directory is
+created (including parents) if it doesn't already exist; the writer never
+requires the program that reads these files to exist or be running.
 
 ```json
 {
@@ -62,11 +64,24 @@ place that data gets captured, as a JSON file per account:
 - The filename is the SHA-256 hex digest of `config_dir`, so it is stable
   across runs and collision-free between different config dirs.
 - `five_hour` / `seven_day` are each omitted when absent from the render
-  input, and `resets_at` is omitted when it couldn't be parsed.
-- Writes are throttled (skipped when unchanged and under 30s old) and
-  atomic (temp file + rename, mode `0600`). Any failure here — unwritable
-  directory, marshal error — is silently skipped; it never affects what the
-  status line prints.
+  input, and `resets_at` is omitted when it can't be parsed into a plausible
+  time (including a value that arrives in milliseconds instead of seconds).
+- `version` only moves for a change that would make an existing reader
+  wrong — a reader accepts nothing but an exact match. Adding a new
+  optional field is not such a change, since readers already tolerate
+  unknown or absent fields, and keeps `version` at 1.
+- The write happens after the status line has already been printed, not on
+  the path that gates it, so a slow or hung filesystem here can delay or
+  lose that one snapshot but never the printed output.
+- A changed value writes immediately. An unchanged value only refreshes
+  `checked_at` at most every 5 minutes, to avoid a write on every render for
+  data that hasn't moved; an idle session's file still gets touched
+  occasionally so a reader doesn't report it as older than it really is.
+- Writes are atomic (temp file, fsynced, then renamed, mode `0600`), and a
+  successful write also clears out any `.usage-*.tmp` file older than an
+  hour left behind by a previous run that was killed mid-write. Any failure
+  here — an unwritable directory, a marshal error — is silently skipped; it
+  never affects what the status line prints.
 
 ## Requirements
 

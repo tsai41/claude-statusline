@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,6 +104,13 @@ type UsageSnapshot struct {
 	SevenDay  *UsageWindow `json:"seven_day,omitempty"`
 }
 
+// usageSnapshotVersion is the UsageSnapshot format version. A reader
+// accepts only an exact match and shows no data for anything else, so this
+// only moves for a change that would make an existing reader wrong. Adding
+// a new optional field that old readers already tolerate ignoring keeps
+// this at 1; bump it only when that stops being true.
+const usageSnapshotVersion = 1
+
 var (
 	gitBranchCache   string
 	gitBranchExpires time.Time
@@ -115,7 +123,20 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to decode input: %v\n", err)
 		os.Exit(1)
 	}
+	render(input, os.Stdout)
+}
 
+// usageSnapshotFn is writeUsageSnapshot, indirected so tests can observe
+// when it runs relative to render's output instead of gating on it.
+var usageSnapshotFn = writeUsageSnapshot
+
+// render gathers the per-render data, writes the formatted status line to
+// out, and only then records the usage snapshot. The snapshot write is not
+// part of the goroutine set that gates out, so a slow or hung
+// STATUSLINE_USAGE_DIR filesystem can never delay or suppress the printed
+// status line — at worst it costs that one snapshot if the process is
+// killed before the write finishes.
+func render(input Input, out io.Writer) {
 	// prefer cwd over workspace.current_dir
 	dir := input.CWD
 	if dir == "" {
@@ -124,7 +145,7 @@ func main() {
 
 	results := make(chan Result, 6)
 	var wg sync.WaitGroup
-	wg.Add(7)
+	wg.Add(6)
 
 	go func() { defer wg.Done(); results <- Result{"git", getGitBranch(dir)} }()
 	go func() {
@@ -141,7 +162,6 @@ func main() {
 		results <- Result{"editwt", detectEditWorktree(input.TranscriptPath, input.SessionID)}
 	}()
 	go func() { defer wg.Done(); results <- Result{"account", readAccountTag()} }()
-	go func() { defer wg.Done(); writeUsageSnapshot(input) }()
 
 	go func() { wg.Wait(); close(results) }()
 
@@ -184,18 +204,20 @@ func main() {
 	if effort != "" {
 		line1 = append(line1, fmt.Sprintf("%s%s%s", ColorDim, effort, ColorReset))
 	}
-	fmt.Println(strings.Join(line1, SEP))
+	fmt.Fprintln(out, strings.Join(line1, SEP))
 
 	// line 2: account │ ctx │ rate limits
-	fmt.Println(formatMetricsLine(input, account))
+	fmt.Fprintln(out, formatMetricsLine(input, account))
 
 	// third line: special tools + last user message
 	if lastTool != "" {
-		fmt.Printf("%s│%s tool: %s\n", ColorDim, ColorReset, lastTool)
+		fmt.Fprintf(out, "%s│%s tool: %s\n", ColorDim, ColorReset, lastTool)
 	}
 	if userMessage != "" {
-		fmt.Print(userMessage)
+		fmt.Fprint(out, userMessage)
 	}
+
+	usageSnapshotFn(input)
 }
 
 func formatMetricsLine(input Input, account string) string {
@@ -490,12 +512,17 @@ func readEffortLevel() string {
 
 // writeUsageSnapshot records the account's rate-limit usage to
 // STATUSLINE_USAGE_DIR for another program to read, since a live status
-// line render is the only place this data ever appears. Every failure path
-// (unset var, no rate_limits, unwritable dir, marshal error) is a silent
-// no-op — this must never affect what the status line prints.
+// line render is the only place this data ever appears. It never requires
+// that other program to exist or be running — it only ever writes a file.
+// Every failure path (unset var, no rate_limits, a dir that can't be
+// created, marshal error) is a silent no-op — this must never affect what
+// the status line prints.
 func writeUsageSnapshot(input Input) {
 	dir := os.Getenv("STATUSLINE_USAGE_DIR")
 	if dir == "" || input.RateLimits == nil {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
 
@@ -515,12 +542,14 @@ func writeUsageSnapshot(input Input) {
 	if err != nil {
 		return
 	}
-	writeFileAtomic(dir, path, data)
+	if writeFileAtomic(dir, path, data) {
+		cleanupStaleUsageTemp(dir, time.Now())
+	}
 }
 
 func buildUsageSnapshot(configDir string, rateLimits *RateLimits, now time.Time) UsageSnapshot {
 	snapshot := UsageSnapshot{
-		Version:   1,
+		Version:   usageSnapshotVersion,
 		ConfigDir: configDir,
 		CheckedAt: now.UTC().Format(time.RFC3339),
 	}
@@ -541,21 +570,37 @@ func usageWindowFrom(rl *RateLimit) *UsageWindow {
 	return window
 }
 
+// plausibleResetTime bounds a rate-limit reset value. A unix timestamp
+// misread from milliseconds lands decades outside this range, and gets
+// rejected the same way an unparseable value does rather than written out.
+var (
+	minPlausibleResetTime = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	maxPlausibleResetTime = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+)
+
 // normalizeResetsAt converts a rate-limit reset value — a unix timestamp or
 // an RFC3339 string, since Claude Code sends this field inconsistently —
-// into an RFC3339 UTC string. ok is false when the value is absent or in a
-// shape neither branch recognizes, so the caller can omit it instead of
-// inventing a time.
+// into an RFC3339 UTC string. ok is false when the value is absent, in a
+// shape neither branch recognizes, or outside plausibleResetTime, so the
+// caller can omit it instead of inventing or trusting a bogus time.
 func normalizeResetsAt(resetsAt interface{}) (string, bool) {
+	var t time.Time
 	switch v := resetsAt.(type) {
 	case float64:
-		return time.Unix(int64(v), 0).UTC().Format(time.RFC3339), true
+		t = time.Unix(int64(v), 0).UTC()
 	case string:
-		if parsed, err := time.Parse(time.RFC3339, v); err == nil {
-			return parsed.UTC().Format(time.RFC3339), true
+		parsed, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return "", false
 		}
+		t = parsed.UTC()
+	default:
+		return "", false
 	}
-	return "", false
+	if t.Before(minPlausibleResetTime) || t.After(maxPlausibleResetTime) {
+		return "", false
+	}
+	return t.Format(time.RFC3339), true
 }
 
 // usageSnapshotPath derives a stable, filesystem-safe filename from
@@ -567,9 +612,20 @@ func usageSnapshotPath(dir, configDir string) string {
 	return filepath.Join(dir, hex.EncodeToString(sum[:])+".json")
 }
 
+// usageRefreshInterval bounds how long an unchanged snapshot's checked_at
+// goes without a refresh. The goal is avoiding redundant writes, not
+// bounding staleness tightly, so this is minutes rather than seconds: an
+// idle session's file would otherwise never get touched again, and a
+// reader would report it as increasingly old for a session that is open
+// right now.
+const usageRefreshInterval = 5 * time.Minute
+
 // shouldSkipUsageWrite implements the throttle: skip when the previous
-// snapshot at path already reflects the same windows and was written under
-// 30 seconds ago. Any read/parse failure means there is nothing to compare
+// snapshot at path already reflects the same windows and checked_at is
+// within usageRefreshInterval of now. The comparison is absolute rather
+// than time.Since, so a checked_at in the future (clock skew, or a file
+// copied from another machine) can't pin the file until real time catches
+// up to it. Any read/parse failure means there is nothing to compare
 // against, so the write proceeds.
 func shouldSkipUsageWrite(path string, snapshot UsageSnapshot) bool {
 	data, err := os.ReadFile(path)
@@ -587,7 +643,11 @@ func shouldSkipUsageWrite(path string, snapshot UsageSnapshot) bool {
 	if err != nil {
 		return false
 	}
-	return time.Since(checkedAt) < 30*time.Second
+	age := time.Since(checkedAt)
+	if age < 0 {
+		age = -age
+	}
+	return age < usageRefreshInterval
 }
 
 func usageWindowEqual(a, b *UsageWindow) bool {
@@ -597,25 +657,56 @@ func usageWindowEqual(a, b *UsageWindow) bool {
 	return *a == *b
 }
 
-// writeFileAtomic writes data to path via a temp file in dir followed by a
-// rename, so a concurrent reader never observes a partial write. Mode 0600
-// comes from os.CreateTemp's default, not an explicit chmod.
-func writeFileAtomic(dir, path string, data []byte) {
+// syncFile is (*os.File).Sync, indirected so tests can simulate a sync
+// failure without needing a real filesystem fault.
+var syncFile = func(f *os.File) error { return f.Sync() }
+
+// writeFileAtomic writes data to path via a temp file in dir, fsynced then
+// renamed, so a concurrent reader never observes a partial write and a
+// crash right after can't leave a zero-byte path. Mode 0600 comes from
+// os.CreateTemp's default, not an explicit chmod. Reports whether it wrote.
+func writeFileAtomic(dir, path string, data []byte) bool {
 	tmp, err := os.CreateTemp(dir, ".usage-*.tmp")
 	if err != nil {
-		return
+		return false
 	}
 	tmpPath := tmp.Name()
 
 	_, writeErr := tmp.Write(data)
+	syncErr := syncFile(tmp)
 	closeErr := tmp.Close()
-	if writeErr != nil || closeErr != nil {
+	if writeErr != nil || syncErr != nil || closeErr != nil {
 		os.Remove(tmpPath)
-		return
+		return false
 	}
 
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
+		return false
+	}
+	return true
+}
+
+// cleanupStaleUsageTemp removes .usage-*.tmp leftovers from a process that
+// was killed between CreateTemp and Rename (a status line timeout is a
+// real case) — the reader only looks at *.json, so nothing else would ever
+// notice or clear them. Any error here is ignored: cleanup must never turn
+// into a write failure.
+func cleanupStaleUsageTemp(dir string, now time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".usage-") || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || now.Sub(info.ModTime()) <= time.Hour {
+			continue
+		}
+		os.Remove(filepath.Join(dir, name))
 	}
 }
 

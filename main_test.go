@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -195,6 +197,8 @@ func TestNormalizeResetsAt(t *testing.T) {
 		{name: "unparseable string", in: "not-a-time", want: "", ok: false},
 		{name: "unexpected type", in: true, want: "", ok: false},
 		{name: "nil", in: nil, want: "", ok: false},
+		{name: "unix timestamp given in milliseconds is implausible", in: float64(1767513600000), want: "", ok: false},
+		{name: "unix timestamp far in the past is implausible", in: float64(0), want: "", ok: false},
 	}
 
 	for _, tt := range tests {
@@ -250,7 +254,9 @@ func TestWriteFileAtomicLeavesNoTempFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "snapshot.json")
 
-	writeFileAtomic(dir, path, []byte(`{"version":1}`))
+	if ok := writeFileAtomic(dir, path, []byte(`{"version":1}`)); !ok {
+		t.Fatal("writeFileAtomic() = false, want true")
+	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -277,6 +283,78 @@ func TestWriteFileAtomicLeavesNoTempFile(t *testing.T) {
 	}
 }
 
+func TestWriteFileAtomicSyncsBeforeRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "snapshot.json")
+
+	var synced bool
+	orig := syncFile
+	syncFile = func(f *os.File) error {
+		synced = true
+		return f.Sync()
+	}
+	defer func() { syncFile = orig }()
+
+	if ok := writeFileAtomic(dir, path, []byte(`{"version":1}`)); !ok {
+		t.Fatal("writeFileAtomic() = false, want true")
+	}
+	if !synced {
+		t.Fatal("writeFileAtomic did not sync the temp file before renaming")
+	}
+}
+
+func TestWriteFileAtomicSkipsRenameWhenSyncFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "snapshot.json")
+
+	orig := syncFile
+	syncFile = func(*os.File) error { return errors.New("sync failed") }
+	defer func() { syncFile = orig }()
+
+	if ok := writeFileAtomic(dir, path, []byte(`{"version":1}`)); ok {
+		t.Fatal("writeFileAtomic() = true, want false when sync fails")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("target file should not exist when sync fails, stat err = %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temp file should be cleaned up after sync failure, dir entries = %v", entries)
+	}
+}
+
+func TestCleanupStaleUsageTemp(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+
+	stale := filepath.Join(dir, ".usage-stale.tmp")
+	fresh := filepath.Join(dir, ".usage-fresh.tmp")
+	other := filepath.Join(dir, "unrelated.tmp")
+	for _, f := range []string{stale, fresh, other} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(stale, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupStaleUsageTemp(dir, now)
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale temp file should be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh temp file should survive: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("non-usage-temp file should survive: %v", err)
+	}
+}
+
 func TestShouldSkipUsageWrite(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -289,23 +367,33 @@ func TestShouldSkipUsageWrite(t *testing.T) {
 			want:     false,
 		},
 		{
-			name:     "unchanged and written recently",
-			prevBody: usageSnapshotJSON(t, 55, time.Now().Add(-5*time.Second)),
+			name:     "unchanged and refreshed recently",
+			prevBody: usageSnapshotJSON(t, 55, time.Now().Add(-usageRefreshInterval/2)),
 			want:     true,
 		},
 		{
-			name:     "unchanged but written over 30s ago",
-			prevBody: usageSnapshotJSON(t, 55, time.Now().Add(-31*time.Second)),
+			name:     "unchanged but refresh is overdue",
+			prevBody: usageSnapshotJSON(t, 55, time.Now().Add(-usageRefreshInterval-time.Second)),
 			want:     false,
 		},
 		{
-			name:     "changed value written recently",
-			prevBody: usageSnapshotJSON(t, 60, time.Now().Add(-5*time.Second)),
+			name:     "changed value refreshed recently",
+			prevBody: usageSnapshotJSON(t, 60, time.Now().Add(-usageRefreshInterval/2)),
 			want:     false,
 		},
 		{
 			name:     "corrupt previous file",
 			prevBody: "{not json",
+			want:     false,
+		},
+		{
+			name:     "unchanged but checked_at is in the future within the interval",
+			prevBody: usageSnapshotJSON(t, 55, time.Now().Add(usageRefreshInterval/2)),
+			want:     true,
+		},
+		{
+			name:     "unchanged but checked_at is far in the future (clock skew)",
+			prevBody: usageSnapshotJSON(t, 55, time.Now().Add(10*usageRefreshInterval)),
 			want:     false,
 		},
 	}
@@ -406,7 +494,7 @@ func TestWriteUsageSnapshot(t *testing.T) {
 		}
 	})
 
-	t.Run("throttles unchanged writes within 30s, writes again once changed", func(t *testing.T) {
+	t.Run("throttles unchanged writes, writes again once changed", func(t *testing.T) {
 		usageDir := t.TempDir()
 		setupUsageEnv(t, usageDir)
 
@@ -435,16 +523,114 @@ func TestWriteUsageSnapshot(t *testing.T) {
 		}
 	})
 
-	t.Run("does not break when the usage dir is unwritable", func(t *testing.T) {
+	t.Run("creates the usage dir when it doesn't exist yet", func(t *testing.T) {
 		usageDir := filepath.Join(t.TempDir(), "does", "not", "exist")
 		setupUsageEnv(t, usageDir)
 
 		writeUsageSnapshot(Input{RateLimits: &RateLimits{FiveHour: &RateLimit{UsedPercentage: 55}}})
 
-		if _, err := os.Stat(usageDir); !os.IsNotExist(err) {
-			t.Fatalf("usage dir should remain absent, stat err = %v", err)
+		info, err := os.Stat(usageDir)
+		if err != nil {
+			t.Fatalf("usage dir should have been created: %v", err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("%s should be a directory", usageDir)
+		}
+
+		var got UsageSnapshot
+		readSoleUsageFile(t, usageDir, &got)
+		if got.FiveHour == nil || got.FiveHour.UsedPercentage != 55 {
+			t.Fatalf("FiveHour = %+v, want UsedPercentage 55", got.FiveHour)
 		}
 	})
+
+	t.Run("stays disabled and writes nothing when the env var is unset, regardless of the registry", func(t *testing.T) {
+		usageDir := t.TempDir()
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("CLAUDE_CONFIG_DIR", "")
+		t.Setenv("STATUSLINE_ACCOUNT_REGISTRY", filepath.Join(home, "does-not-exist.json"))
+		t.Setenv("STATUSLINE_USAGE_DIR", "")
+
+		writeUsageSnapshot(Input{RateLimits: &RateLimits{FiveHour: &RateLimit{UsedPercentage: 55}}})
+
+		assertDirEmpty(t, usageDir)
+		entries, err := os.ReadDir(home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("HOME should be untouched, entries = %v", entries)
+		}
+	})
+}
+
+// The usage snapshot write must never gate the printed status line: it
+// runs after render's output is already written, not as one of the
+// goroutines the output waits on.
+func TestRenderWritesUsageSnapshotAfterPrinting(t *testing.T) {
+	origFn := usageSnapshotFn
+	defer func() { usageSnapshotFn = origFn }()
+
+	var buf bytes.Buffer
+	var sawOutputBeforeWrite bool
+	usageSnapshotFn = func(Input) {
+		sawOutputBeforeWrite = buf.Len() > 0
+	}
+
+	input := Input{}
+	input.Model.DisplayName = "Claude Test"
+	render(input, &buf)
+
+	if !sawOutputBeforeWrite {
+		t.Fatal("usage snapshot write ran before the status line was printed")
+	}
+}
+
+// No environment variable this program reads is required: everything must
+// degrade to printing a plain status line, never a panic or a bad exit.
+func TestRenderNeverPanicsWithNoConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("STATUSLINE_ACCOUNT", "")
+	t.Setenv("STATUSLINE_ACCOUNT_REGISTRY", "")
+	t.Setenv("STATUSLINE_USAGE_DIR", "")
+
+	input := Input{}
+	input.Model.DisplayName = "Claude Test"
+
+	var buf bytes.Buffer
+	render(input, &buf)
+
+	if !strings.Contains(buf.String(), "Claude Test") {
+		t.Fatalf("render output = %q, want it to contain the model name", buf.String())
+	}
+}
+
+// STATUSLINE_USAGE_DIR must be purely additive: whether it is set must not
+// change a single byte of what gets printed.
+func TestRenderOutputUnaffectedByUsageDirSetting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("STATUSLINE_ACCOUNT", "0")
+
+	input := Input{}
+	input.Model.DisplayName = "Claude Test"
+
+	t.Setenv("STATUSLINE_USAGE_DIR", "")
+	var withoutDir bytes.Buffer
+	render(input, &withoutDir)
+
+	t.Setenv("STATUSLINE_USAGE_DIR", t.TempDir())
+	var withDir bytes.Buffer
+	render(input, &withDir)
+
+	if withoutDir.String() != withDir.String() {
+		t.Fatalf("render output changed based on STATUSLINE_USAGE_DIR:\nwithout = %q\nwith    = %q",
+			withoutDir.String(), withDir.String())
+	}
 }
 
 func assertDirEmpty(t *testing.T, dir string) {
