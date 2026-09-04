@@ -17,7 +17,7 @@ A Go-based status line for [Claude Code](https://claude.ai/code).
 - Effort level indicator
 - Special tool usage (Agent, Skill, MCP only)
 - Last user message preview
-- Account tag naming the account the session runs as: the [ccs](https://github.com/tsai41/agent-conversation-handoff) registry entry whose home is `CLAUDE_CONFIG_DIR` (`#4 orli`), falling back to the first 3 characters before `@` for a home the registry does not know (hide with `STATUSLINE_ACCOUNT=0`, point at a different registry with `STATUSLINE_ACCOUNT_REGISTRY=/path/to/accounts.json`)
+- Account tag naming the account the session runs as: the [ccs](https://github.com/tsai41/agent-conversation-handoff) registry entry whose home is `CLAUDE_CONFIG_DIR` (`#4 orli`) — no tag shown when the registry doesn't list this account, or is missing or unreadable (hide explicitly with `STATUSLINE_ACCOUNT=0`, point at a different registry with `STATUSLINE_ACCOUNT_REGISTRY=/path/to/accounts.json`)
 - Optional rate-limit usage snapshot written per-account to `STATUSLINE_USAGE_DIR` for another program to read (see below)
 
 ## Preview

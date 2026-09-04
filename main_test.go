@@ -44,60 +44,34 @@ func TestFormatResetDurationKeepsHoursAndMinutesForDurationsUnderADay(t *testing
 	}
 }
 
-func TestReadAccountTag(t *testing.T) {
+func TestReadAccountTagHiddenByToggle(t *testing.T) {
 	cases := []struct {
-		name     string
-		email    string
-		toggle   string
-		want     string
-		noFile   bool
-		inConfig bool
+		name   string
+		toggle string
 	}{
-		{name: "truncates to three chars", email: "orli.zhao@stranity.com", want: "orl"},
-		{name: "keeps short local part", email: "ab@x.com", want: "ab"},
-		{name: "hidden by toggle", email: "orli.zhao@stranity.com", toggle: "0", want: ""},
-		{name: "hidden by toggle word", email: "orli.zhao@stranity.com", toggle: "OFF", want: ""},
-		{name: "no at sign", email: "orli.zhao", want: ""},
-		{name: "missing config file", noFile: true, want: ""},
-		// The whole point of the config dir: which account this session
-		// runs as is the dir it was started with, not whoever the default
-		// home last logged in as.
-		{name: "reads the config dir this session runs in", email: "illie.cheng@stranity.com", inConfig: true, want: "ill"},
+		{name: "0", toggle: "0"},
+		{name: "off word", toggle: "OFF"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
-			t.Setenv("STATUSLINE_ACCOUNT", tc.toggle)
-			configDir := filepath.Join(home, ".claude-2")
+			configDir := filepath.Join(home, ".claude-4")
 			if err := os.MkdirAll(configDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			t.Setenv("CLAUDE_CONFIG_DIR", "")
-			if tc.inConfig {
-				t.Setenv("CLAUDE_CONFIG_DIR", configDir)
-			}
-			if !tc.noFile {
-				body := fmt.Sprintf(`{"oauthAccount":{"emailAddress":%q},"projects":{}}`, tc.email)
-				target := filepath.Join(home, ".claude.json")
-				if tc.inConfig {
-					target = filepath.Join(configDir, ".claude.json")
-				}
-				if err := os.WriteFile(target, []byte(body), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
+			t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+			writeCcsRegistry(t, home, configDir, "orli")
+			t.Setenv("STATUSLINE_ACCOUNT", tc.toggle)
 
-			if got := readAccountTag(); got != tc.want {
-				t.Fatalf("readAccountTag() = %q, want %q", got, tc.want)
+			if got := readAccountTag(); got != "" {
+				t.Fatalf("readAccountTag() = %q, want hidden", got)
 			}
 		})
 	}
 }
 
-// The ccs registry names the account; the email is only the fallback for a
-// home it has never heard of.
 func TestReadAccountTagPrefersTheCcsRegistryName(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -118,7 +92,6 @@ func TestReadAccountTagPrefersTheCcsRegistryName(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("CLAUDE_CONFIG_DIR", configDir)
-			writeAccountConfig(t, filepath.Join(configDir, ".claude.json"), "orli.zhao@stranity.com")
 			writeCcsRegistry(t, home, configDir, tc.alias)
 
 			if got := readAccountTag(); got != tc.want {
@@ -129,8 +102,8 @@ func TestReadAccountTagPrefersTheCcsRegistryName(t *testing.T) {
 }
 
 // A registry that lists other accounts but not this home must not label
-// the session with one of them.
-func TestReadAccountTagFallsBackToTheEmailForAnUnregisteredHome(t *testing.T) {
+// the session with one of them, and must not fall back to anything else.
+func TestReadAccountTagNoTagForAnUnregisteredHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("STATUSLINE_ACCOUNT", "")
@@ -142,11 +115,10 @@ func TestReadAccountTagFallsBackToTheEmailForAnUnregisteredHome(t *testing.T) {
 		}
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
-	writeAccountConfig(t, filepath.Join(configDir, ".claude.json"), "orli.zhao@stranity.com")
 	writeCcsRegistry(t, home, elsewhere, "illie")
 
-	if got := readAccountTag(); got != "orl" {
-		t.Fatalf("readAccountTag() = %q, want %q", got, "orl")
+	if got := readAccountTag(); got != "" {
+		t.Fatalf("readAccountTag() = %q, want no tag", got)
 	}
 }
 
@@ -161,7 +133,6 @@ func TestReadAccountTagHonorsRegistryOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
-	writeAccountConfig(t, filepath.Join(configDir, ".claude.json"), "orli.zhao@stranity.com")
 
 	registryDir := t.TempDir()
 	registryPath := filepath.Join(registryDir, "roster.json")
@@ -176,11 +147,45 @@ func TestReadAccountTagHonorsRegistryOverride(t *testing.T) {
 	}
 }
 
-func writeAccountConfig(t *testing.T, path, email string) {
-	t.Helper()
-	body := fmt.Sprintf(`{"oauthAccount":{"emailAddress":%q},"projects":{}}`, email)
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
+// Neither the default registry path nor an explicit override may ever
+// panic or fall back to something else when the roster itself is unusable
+// — a missing/malformed registry means no tag, not a crash.
+func TestReadAccountTagNoTagWithoutAUsableRegistry(t *testing.T) {
+	cases := []struct {
+		name         string
+		registryBody string // "" leaves no registry file at all
+		override     bool   // point STATUSLINE_ACCOUNT_REGISTRY at a missing file
+	}{
+		{name: "no registry file at the default path"},
+		{name: "malformed registry file", registryBody: "{not json"},
+		{name: "registry override points at a missing file", override: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("STATUSLINE_ACCOUNT", "")
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
+			t.Setenv("STATUSLINE_ACCOUNT_REGISTRY", "")
+
+			if tc.registryBody != "" {
+				dir := filepath.Join(home, ".config", "agent-conversation-handoff")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "accounts.json"), []byte(tc.registryBody), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.override {
+				t.Setenv("STATUSLINE_ACCOUNT_REGISTRY", filepath.Join(home, "does-not-exist.json"))
+			}
+
+			if got := readAccountTag(); got != "" {
+				t.Fatalf("readAccountTag() = %q, want no tag", got)
+			}
+		})
 	}
 }
 

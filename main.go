@@ -366,10 +366,9 @@ func getGitBranch(dir string) string {
 }
 
 // readAccountTag names the account this session runs as: the ccs registry
-// entry whose home is this session's config dir ("#4 orli"), falling back
-// to the first 3 characters of the logged-in email's local part when the
-// registry does not know that home. Empty when hidden via
-// STATUSLINE_ACCOUNT or unavailable.
+// entry whose home is this session's config dir ("#4 orli"). Empty when the
+// registry doesn't list this config dir, the registry is missing or
+// unreadable, or the tag is hidden via STATUSLINE_ACCOUNT.
 func readAccountTag() string {
 	switch strings.ToLower(os.Getenv("STATUSLINE_ACCOUNT")) {
 	case "0", "false", "off", "no":
@@ -382,10 +381,7 @@ func readAccountTag() string {
 	}
 
 	configDir := claudeConfigDir(homeDir)
-	if tag := registryAccountTag(homeDir, configDir); tag != "" {
-		return tag
-	}
-	return emailAccountTag(accountConfigPath(homeDir, configDir))
+	return registryAccountTag(homeDir, configDir)
 }
 
 // registryAccountTag asks the ccs registry what it calls the account
@@ -445,42 +441,6 @@ func claudeConfigDir(homeDir string) string {
 		return dir
 	}
 	return filepath.Join(homeDir, ".claude")
-}
-
-// accountConfigPath finds the config document holding oauthAccount. A
-// custom config dir keeps its own; the default one leaves it at ~/.claude.json.
-func accountConfigPath(homeDir, configDir string) string {
-	inDir := filepath.Join(configDir, ".claude.json")
-	if _, err := os.Stat(inDir); err == nil {
-		return inDir
-	}
-	return filepath.Join(homeDir, ".claude.json")
-}
-
-func emailAccountTag(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-
-	var cfg struct {
-		OAuthAccount struct {
-			EmailAddress string `json:"emailAddress"`
-		} `json:"oauthAccount"`
-	}
-	if err := json.NewDecoder(f).Decode(&cfg); err != nil {
-		return ""
-	}
-
-	local, _, ok := strings.Cut(cfg.OAuthAccount.EmailAddress, "@")
-	if !ok || local == "" {
-		return ""
-	}
-	if r := []rune(local); len(r) > 3 {
-		return string(r[:3])
-	}
-	return local
 }
 
 func readEffortLevel() string {
