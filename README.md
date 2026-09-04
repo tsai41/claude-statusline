@@ -30,7 +30,7 @@ A Go-based status line for [Claude Code](https://claude.ai/code).
 ```
 
 Line 1 — location + identity: directory, git branch (with dirty indicator), worktree edit target (`→wt:name`), model, effort level  
-Line 2 — metrics: account tag, context usage, rate limit remaining with reset countdown  
+Line 2 — metrics: context usage, rate limit remaining with reset countdown, account tag (same color as the branch, at the end of the line, kept away from Claude Code's own mode hint)  
 Line 3 — activity: special tool calls (Agent / Skill / MCP only), last user message
 
 ## Configuration

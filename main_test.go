@@ -842,3 +842,27 @@ func writeCcsRegistry(t *testing.T, home, accountHome, alias string) {
 		t.Fatal(err)
 	}
 }
+
+func TestFormatMetricsLinePutsTheAccountTagLastAsAReverseVideoBadge(t *testing.T) {
+	var input Input
+	input.RateLimits = &RateLimits{FiveHour: &RateLimit{UsedPercentage: 10}, SevenDay: &RateLimit{UsedPercentage: 20}}
+	got := formatMetricsLine(input, "#4 orli")
+	segments := strings.Split(got, SEP)
+	last := segments[len(segments)-1]
+	if !strings.HasPrefix(last, ColorWhite+"#4 orli") {
+		t.Fatalf("formatMetricsLine() last segment = %q, want the account tag in the branch color", last)
+	}
+	if strings.Contains(got, ColorGold) {
+		t.Fatalf("formatMetricsLine() = %q, must not color the account gold", got)
+	}
+	if strings.Index(got, "7d:") > strings.Index(got, "#4 orli") {
+		t.Fatalf("formatMetricsLine() = %q, account must come after 7d", got)
+	}
+}
+
+func TestFormatMetricsLineWithOnlyAnAccountIsJustTheTag(t *testing.T) {
+	got := formatMetricsLine(Input{}, "#4 orli")
+	if got != ColorWhite+"#4 orli"+ColorReset {
+		t.Fatalf("formatMetricsLine() = %q, want the tag alone with no separator", got)
+	}
+}

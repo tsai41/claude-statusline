@@ -21,6 +21,7 @@ const (
 	ColorReset  = "\033[0m"
 	ColorDim    = "\033[2m"
 	ColorBold   = "\033[1m"
+	ColorWhite  = "\033[37m"
 	ColorGold   = "\033[38;2;195;158;83m"
 	ColorCyan   = "\033[36m"
 	ColorGreen  = "\033[32m"
@@ -226,7 +227,7 @@ func render(input Input, out io.Writer) {
 	var line1 []string
 	line1 = append(line1, fmt.Sprintf("%s%s%s", ColorCyan, shortDir, ColorReset))
 	if gitBranch != "" {
-		line1 = append(line1, fmt.Sprintf("\033[37m⚡ %s%s", gitBranch, ColorReset))
+		line1 = append(line1, fmt.Sprintf("%s⚡ %s%s", ColorWhite, gitBranch, ColorReset))
 	}
 	if editWorktree != "" {
 		line1 = append(line1, fmt.Sprintf("%s%s%s", ColorCyan, editWorktree, ColorReset))
@@ -237,7 +238,7 @@ func render(input Input, out io.Writer) {
 	}
 	fmt.Fprintln(out, strings.Join(line1, SEP))
 
-	// line 2: account │ ctx │ rate limits
+	// line 2: ctx │ rate limits │ account
 	fmt.Fprintln(out, formatMetricsLine(input, account))
 
 	// third line: special tools + last user message
@@ -253,9 +254,6 @@ func render(input Input, out io.Writer) {
 
 func formatMetricsLine(input Input, account string) string {
 	var line2 []string
-	if account != "" {
-		line2 = append(line2, fmt.Sprintf("%s%s%s", ColorGold, account, ColorReset))
-	}
 	if input.ContextWindow != nil {
 		used := int(input.ContextWindow.UsedPercentage)
 		remaining := 100 - used
@@ -276,6 +274,13 @@ func formatMetricsLine(input Input, account string) string {
 			reset := formatResetTime(rl.ResetsAt)
 			line2 = append(line2, fmt.Sprintf("%s7d: %d%%%s%s%s%s", color, remaining, ColorReset, ColorDim, reset, ColorReset))
 		}
+	}
+	// Last, in the branch's color: leftmost on this line sits right under
+	// Claude Code's own permission-mode hint, and a warm-colored tag there
+	// read as part of it. Branch and account are the same kind of fact --
+	// "where am I" -- so they share a color.
+	if account != "" {
+		line2 = append(line2, fmt.Sprintf("%s%s%s", ColorWhite, account, ColorReset))
 	}
 	return strings.Join(line2, SEP)
 }
