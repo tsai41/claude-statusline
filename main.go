@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -118,12 +119,42 @@ var (
 )
 
 func main() {
+	currentFlags = parseFlags(os.Args[1:])
+
 	var input Input
 	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to decode input: %v\n", err)
 		os.Exit(1)
 	}
 	render(input, os.Stdout)
+}
+
+// cliFlags holds parsed --flag values. Zero value (all empty/false) means
+// none were passed, matching the behavior before these flags existed:
+// callers fall through to the environment variable.
+type cliFlags struct {
+	usageDir        string
+	accountRegistry string
+	noAccount       bool
+}
+
+// currentFlags is parsed once in main and consulted by usageDir,
+// accountRegistryPath and accountHidden. Tests set it directly.
+var currentFlags cliFlags
+
+// parseFlags never exits or panics on a bad argument: this program's
+// stdout is a Claude Code status line, so a malformed flag must be ignored
+// rather than abort the render. ContinueOnError plus a discarded error
+// achieves that; flag's default ExitOnError would os.Exit instead.
+func parseFlags(args []string) cliFlags {
+	var f cliFlags
+	fs := flag.NewFlagSet("claude-statusline", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&f.usageDir, "usage-dir", "", "override STATUSLINE_USAGE_DIR")
+	fs.StringVar(&f.accountRegistry, "account-registry", "", "override STATUSLINE_ACCOUNT_REGISTRY")
+	fs.BoolVar(&f.noAccount, "no-account", false, "hide the account tag, like STATUSLINE_ACCOUNT=0")
+	_ = fs.Parse(args)
+	return f
 }
 
 // usageSnapshotFn is writeUsageSnapshot, indirected so tests can observe
@@ -368,10 +399,9 @@ func getGitBranch(dir string) string {
 // readAccountTag names the account this session runs as: the ccs registry
 // entry whose home is this session's config dir ("#4 orli"). Empty when the
 // registry doesn't list this config dir, the registry is missing or
-// unreadable, or the tag is hidden via STATUSLINE_ACCOUNT.
+// unreadable, or the tag is hidden (see accountHidden).
 func readAccountTag() string {
-	switch strings.ToLower(os.Getenv("STATUSLINE_ACCOUNT")) {
-	case "0", "false", "off", "no":
+	if accountHidden() {
 		return ""
 	}
 
@@ -425,10 +455,27 @@ func registryAccountTag(homeDir, configDir string) string {
 	return ""
 }
 
+// accountHidden reports whether the account tag should be suppressed:
+// --no-account, or else STATUSLINE_ACCOUNT set to a falsy value.
+func accountHidden() bool {
+	if currentFlags.noAccount {
+		return true
+	}
+	switch strings.ToLower(os.Getenv("STATUSLINE_ACCOUNT")) {
+	case "0", "false", "off", "no":
+		return true
+	}
+	return false
+}
+
 // accountRegistryPath is the ccs registry file naming known accounts,
-// overridable via STATUSLINE_ACCOUNT_REGISTRY so this program reads a
-// roster of accounts rather than presuming whose roster it is.
+// overridable via --account-registry or STATUSLINE_ACCOUNT_REGISTRY so this
+// program reads a roster of accounts rather than presuming whose roster it
+// is.
 func accountRegistryPath(homeDir string) string {
+	if currentFlags.accountRegistry != "" {
+		return currentFlags.accountRegistry
+	}
 	if path := os.Getenv("STATUSLINE_ACCOUNT_REGISTRY"); path != "" {
 		return path
 	}
@@ -470,15 +517,24 @@ func readEffortLevel() string {
 	return ""
 }
 
-// writeUsageSnapshot records the account's rate-limit usage to
-// STATUSLINE_USAGE_DIR for another program to read, since a live status
-// line render is the only place this data ever appears. It never requires
-// that other program to exist or be running — it only ever writes a file.
-// Every failure path (unset var, no rate_limits, a dir that can't be
-// created, marshal error) is a silent no-op — this must never affect what
-// the status line prints.
+// usageDir resolves where to write the usage snapshot: --usage-dir if
+// passed, else STATUSLINE_USAGE_DIR, else "" (write nothing).
+func usageDir() string {
+	if currentFlags.usageDir != "" {
+		return currentFlags.usageDir
+	}
+	return os.Getenv("STATUSLINE_USAGE_DIR")
+}
+
+// writeUsageSnapshot records the account's rate-limit usage to usageDir()
+// for another program to read, since a live status line render is the only
+// place this data ever appears. It never requires that other program to
+// exist or be running — it only ever writes a file. Every failure path (no
+// configured dir, no rate_limits, a dir that can't be created, marshal
+// error) is a silent no-op — this must never affect what the status line
+// prints.
 func writeUsageSnapshot(input Input) {
-	dir := os.Getenv("STATUSLINE_USAGE_DIR")
+	dir := usageDir()
 	if dir == "" || input.RateLimits == nil {
 		return
 	}

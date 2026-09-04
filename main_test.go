@@ -671,6 +671,161 @@ func readSoleUsageFile(t *testing.T, dir string, out *UsageSnapshot) string {
 	return path
 }
 
+// withFlags sets currentFlags for the duration of the test and restores the
+// prior value on cleanup, since currentFlags is process-global state shared
+// across the whole sequential test run.
+func withFlags(t *testing.T, f cliFlags) {
+	t.Helper()
+	orig := currentFlags
+	currentFlags = f
+	t.Cleanup(func() { currentFlags = orig })
+}
+
+func TestUsageDirFlagOverridesEnvVar(t *testing.T) {
+	t.Setenv("STATUSLINE_USAGE_DIR", "/env/usage")
+	withFlags(t, cliFlags{usageDir: "/flag/usage"})
+
+	if got := usageDir(); got != "/flag/usage" {
+		t.Fatalf("usageDir() = %q, want flag value", got)
+	}
+}
+
+func TestUsageDirFallsBackToEnvVarWhenFlagAbsent(t *testing.T) {
+	t.Setenv("STATUSLINE_USAGE_DIR", "/env/usage")
+	withFlags(t, cliFlags{})
+
+	if got := usageDir(); got != "/env/usage" {
+		t.Fatalf("usageDir() = %q, want env value", got)
+	}
+}
+
+func TestAccountRegistryPathFlagOverridesEnvVar(t *testing.T) {
+	t.Setenv("STATUSLINE_ACCOUNT_REGISTRY", "/env/registry.json")
+	withFlags(t, cliFlags{accountRegistry: "/flag/registry.json"})
+
+	if got := accountRegistryPath("/home/x"); got != "/flag/registry.json" {
+		t.Fatalf("accountRegistryPath() = %q, want flag value", got)
+	}
+}
+
+func TestAccountRegistryPathFallsBackToEnvVarWhenFlagAbsent(t *testing.T) {
+	t.Setenv("STATUSLINE_ACCOUNT_REGISTRY", "/env/registry.json")
+	withFlags(t, cliFlags{})
+
+	if got := accountRegistryPath("/home/x"); got != "/env/registry.json" {
+		t.Fatalf("accountRegistryPath() = %q, want env value", got)
+	}
+}
+
+// --no-account must hide the tag even when STATUSLINE_ACCOUNT says to show it.
+func TestNoAccountFlagOverridesEnvVar(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".claude-4")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	writeCcsRegistry(t, home, configDir, "orli")
+	t.Setenv("STATUSLINE_ACCOUNT", "")
+	withFlags(t, cliFlags{noAccount: true})
+
+	if got := readAccountTag(); got != "" {
+		t.Fatalf("readAccountTag() = %q, want hidden via --no-account", got)
+	}
+}
+
+// Without the flag, STATUSLINE_ACCOUNT alone still governs visibility.
+func TestNoAccountAbsentFlagLeavesEnvVarBehavior(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".claude-4")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	writeCcsRegistry(t, home, configDir, "orli")
+	t.Setenv("STATUSLINE_ACCOUNT", "0")
+	withFlags(t, cliFlags{})
+
+	if got := readAccountTag(); got != "" {
+		t.Fatalf("readAccountTag() = %q, want hidden via env var when flag absent", got)
+	}
+}
+
+// A malformed or unknown flag must not stop the status line from printing:
+// this program's stdout is a UI element inside another program, and exiting
+// on a bad flag would leave that UI blank with no way to see why.
+func TestParseFlagsMalformedArgumentDoesNotPanic(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "unknown flag", args: []string{"--bogus", "value"}},
+		{name: "flag missing its value", args: []string{"--usage-dir"}},
+		{name: "unknown flag before a valid one", args: []string{"--bogus", "--usage-dir", "/x"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseFlags(tc.args) // must not panic
+			_ = got
+		})
+	}
+}
+
+// The render call after a malformed argument must still print a status
+// line, exercising the same path main() takes.
+func TestRenderStillPrintsAfterMalformedArgument(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("STATUSLINE_ACCOUNT", "")
+	t.Setenv("STATUSLINE_ACCOUNT_REGISTRY", "")
+	t.Setenv("STATUSLINE_USAGE_DIR", "")
+	withFlags(t, parseFlags([]string{"--not-a-real-flag", "oops"}))
+
+	input := Input{}
+	input.Model.DisplayName = "Claude Test"
+
+	var buf bytes.Buffer
+	render(input, &buf)
+
+	if !strings.Contains(buf.String(), "Claude Test") {
+		t.Fatalf("render output = %q, want it to contain the model name", buf.String())
+	}
+}
+
+// With no flags and no environment variables, output must match the
+// pre-flags behavior byte for byte.
+func TestRenderUnchangedWithNoFlagsAndNoEnvVars(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("STATUSLINE_ACCOUNT", "")
+	t.Setenv("STATUSLINE_ACCOUNT_REGISTRY", "")
+	t.Setenv("STATUSLINE_USAGE_DIR", "")
+	withFlags(t, parseFlags(nil))
+
+	input := Input{}
+	input.Model.DisplayName = "Claude Test"
+
+	var withParsedFlags bytes.Buffer
+	render(input, &withParsedFlags)
+
+	withFlags(t, cliFlags{})
+	var withZeroFlags bytes.Buffer
+	render(input, &withZeroFlags)
+
+	if withParsedFlags.String() != withZeroFlags.String() {
+		t.Fatalf("render output with parseFlags(nil) = %q, want identical to zero-value cliFlags = %q",
+			withParsedFlags.String(), withZeroFlags.String())
+	}
+	if !strings.Contains(withZeroFlags.String(), "Claude Test") {
+		t.Fatalf("render output = %q, want it to contain the model name", withZeroFlags.String())
+	}
+}
+
 func writeCcsRegistry(t *testing.T, home, accountHome, alias string) {
 	t.Helper()
 	dir := filepath.Join(home, ".config", "agent-conversation-handoff")

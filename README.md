@@ -17,8 +17,8 @@ A Go-based status line for [Claude Code](https://claude.ai/code).
 - Effort level indicator
 - Special tool usage (Agent, Skill, MCP only)
 - Last user message preview
-- Account tag naming the account the session runs as: the [ccs](https://github.com/tsai41/agent-conversation-handoff) registry entry whose home is `CLAUDE_CONFIG_DIR` (`#4 orli`) — no tag shown when the registry doesn't list this account, or is missing or unreadable (hide explicitly with `STATUSLINE_ACCOUNT=0`, point at a different registry with `STATUSLINE_ACCOUNT_REGISTRY=/path/to/accounts.json`)
-- Optional rate-limit usage snapshot written per-account to `STATUSLINE_USAGE_DIR` for another program to read (see below)
+- Account tag naming the account the session runs as: the [ccs](https://github.com/tsai41/agent-conversation-handoff) registry entry whose home is `CLAUDE_CONFIG_DIR` (`#4 orli`) — no tag shown when the registry doesn't list this account, or is missing or unreadable (hide explicitly with `--no-account` / `STATUSLINE_ACCOUNT=0`, point at a different registry with `--account-registry` / `STATUSLINE_ACCOUNT_REGISTRY`)
+- Optional rate-limit usage snapshot written per-account to a directory set via `--usage-dir` / `STATUSLINE_USAGE_DIR` for another program to read (see below)
 
 ## Preview
 
@@ -33,15 +33,29 @@ Line 1 — location + identity: directory, git branch (with dirty indicator), wo
 Line 2 — metrics: account tag, context usage, rate limit remaining with reset countdown  
 Line 3 — activity: special tool calls (Agent / Skill / MCP only), last user message
 
-## Environment variables
+## Configuration
 
-| Variable | Effect |
-|---|---|
-| `STATUSLINE_ACCOUNT` | Set to `0` / `false` / `off` / `no` to hide the account tag |
-| `STATUSLINE_ACCOUNT_REGISTRY` | Path to a ccs-format accounts registry, overriding the default `~/.config/agent-conversation-handoff/accounts.json` |
-| `STATUSLINE_USAGE_DIR` | When set, write a per-account rate-limit usage snapshot into this directory on every render that carries `rate_limits` (see below) |
+Every setting below is available as both a command-line flag and an
+environment variable. **Precedence: flag > environment variable > default.**
+A flag that isn't passed changes nothing — the matching environment variable
+(or the built-in default, if that's unset too) still applies. With neither
+set, the status line prints exactly as it always has and writes nothing to
+disk.
 
-### Usage snapshot (`STATUSLINE_USAGE_DIR`)
+Since `settings.json`'s `command` string runs through a shell, flags placed
+right in that string reach this program — no separate config file needed.
+
+An unrecognized or malformed flag is ignored rather than treated as fatal:
+this program's output is a status line embedded in Claude Code's UI, so
+exiting on a bad flag would leave that UI blank with no way to see why.
+
+| Flag | Environment variable | Effect |
+|---|---|---|
+| `--usage-dir <path>` | `STATUSLINE_USAGE_DIR` | Write a per-account rate-limit usage snapshot into this directory on every render that carries `rate_limits` (see below) |
+| `--account-registry <path>` | `STATUSLINE_ACCOUNT_REGISTRY` | Path to a ccs-format accounts registry, overriding the default `~/.config/agent-conversation-handoff/accounts.json` |
+| `--no-account` | `STATUSLINE_ACCOUNT` set to `0` / `false` / `off` / `no` | Hide the account tag |
+
+### Usage snapshot (`--usage-dir` / `STATUSLINE_USAGE_DIR`)
 
 Rate-limit usage is only ever sent to a live status line render — there is no
 API to query it otherwise. Setting `STATUSLINE_USAGE_DIR` makes this the one
@@ -115,6 +129,17 @@ Either way, add to `~/.claude/settings.json`:
 "statusLine": {
   "type": "command",
   "command": "~/.claude/statusline-go",
+  "padding": 0
+}
+```
+
+To also enable usage snapshots, pass `--usage-dir` right in the command
+string:
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "~/.claude/statusline-go --usage-dir ~/.claude/usage",
   "padding": 0
 }
 ```
