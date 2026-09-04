@@ -322,8 +322,11 @@ func getGitBranch(dir string) string {
 	return result
 }
 
-// readAccountTag returns the first 3 characters of the logged-in account's email
-// local part, or "" when hidden via STATUSLINE_ACCOUNT or unavailable.
+// readAccountTag names the account this session runs as: the ccs registry
+// entry whose home is this session's config dir ("#4 orli"), falling back
+// to the first 3 characters of the logged-in email's local part when the
+// registry does not know that home. Empty when hidden via
+// STATUSLINE_ACCOUNT or unavailable.
 func readAccountTag() string {
 	switch strings.ToLower(os.Getenv("STATUSLINE_ACCOUNT")) {
 	case "0", "false", "off", "no":
@@ -335,7 +338,69 @@ func readAccountTag() string {
 		return ""
 	}
 
-	f, err := os.Open(filepath.Join(homeDir, ".claude.json"))
+	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if configDir == "" {
+		configDir = filepath.Join(homeDir, ".claude")
+	}
+	if tag := registryAccountTag(homeDir, configDir); tag != "" {
+		return tag
+	}
+	return emailAccountTag(accountConfigPath(homeDir, configDir))
+}
+
+// registryAccountTag asks the ccs registry what it calls the account
+// living in configDir. The home is matched with os.SameFile rather than by
+// spelling: CLAUDE_CONFIG_DIR and the registry can name one directory
+// differently (a symlink, a case-insensitive volume, a trailing slash) and
+// a missed match would silently label the session as somebody else.
+func registryAccountTag(homeDir, configDir string) string {
+	raw, err := os.ReadFile(filepath.Join(homeDir, ".config", "agent-conversation-handoff", "accounts.json"))
+	if err != nil {
+		return ""
+	}
+	var registry struct {
+		Accounts []struct {
+			Provider string `json:"provider"`
+			Number   int    `json:"number"`
+			Home     string `json:"home"`
+			Alias    string `json:"alias"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(raw, &registry); err != nil {
+		return ""
+	}
+	current, err := os.Stat(configDir)
+	if err != nil {
+		return ""
+	}
+	for _, account := range registry.Accounts {
+		if account.Provider != "claude" {
+			continue
+		}
+		home, err := os.Stat(account.Home)
+		if err != nil || !os.SameFile(current, home) {
+			continue
+		}
+		if account.Alias == "" {
+			return fmt.Sprintf("#%d", account.Number)
+		}
+		return fmt.Sprintf("#%d %s", account.Number, account.Alias)
+	}
+	return ""
+}
+
+// accountConfigPath finds the config document holding oauthAccount. A
+// custom config dir keeps its own; the default one leaves it at ~/.claude.json.
+func accountConfigPath(homeDir, configDir string) string {
+	inDir := filepath.Join(configDir, ".claude.json")
+	if _, err := os.Stat(inDir); err == nil {
+		return inDir
+	}
+	return filepath.Join(homeDir, ".claude.json")
+}
+
+func emailAccountTag(path string) string {
+	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
