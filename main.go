@@ -138,6 +138,7 @@ type cliFlags struct {
 	accountRegistry string
 	noAccount       bool
 	noLastMessage   bool
+	noLastTool      bool
 }
 
 // currentFlags is parsed once in main and consulted by usageDir,
@@ -156,6 +157,7 @@ func parseFlags(args []string) cliFlags {
 	fs.StringVar(&f.accountRegistry, "account-registry", "", "override STATUSLINE_ACCOUNT_REGISTRY")
 	fs.BoolVar(&f.noAccount, "no-account", false, "hide the account tag, like STATUSLINE_ACCOUNT=0")
 	fs.BoolVar(&f.noLastMessage, "no-last-message", false, "hide the last user message on line 3, like STATUSLINE_LAST_MESSAGE=0")
+	fs.BoolVar(&f.noLastTool, "no-last-tool", false, "hide the tool line on line 3, like STATUSLINE_LAST_TOOL=0")
 	_ = fs.Parse(args)
 	return f
 }
@@ -195,7 +197,11 @@ func render(input Input, out io.Writer) {
 	}()
 	go func() {
 		defer wg.Done()
-		results <- Result{"tool", extractLastTool(input.TranscriptPath, input.SessionID)}
+		tool := ""
+		if !hideLineThree && !lastToolHidden() {
+			tool = extractLastTool(input.TranscriptPath, input.SessionID)
+		}
+		results <- Result{"tool", tool}
 	}()
 	go func() { defer wg.Done(); results <- Result{"effort", readEffortLevel()} }()
 	go func() {
@@ -504,6 +510,12 @@ func envOff(name string) bool {
 // falsy value.
 func lastMessageHidden() bool {
 	return currentFlags.noLastMessage || envOff("STATUSLINE_LAST_MESSAGE")
+}
+
+// lastToolHidden reports whether line 3's tool line should be suppressed:
+// --no-last-tool, or else STATUSLINE_LAST_TOOL set to a falsy value.
+func lastToolHidden() bool {
+	return currentFlags.noLastTool || envOff("STATUSLINE_LAST_TOOL")
 }
 
 // accountRegistryPath is the ccs registry file naming known accounts,

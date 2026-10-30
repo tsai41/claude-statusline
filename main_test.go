@@ -1052,3 +1052,48 @@ func TestRenderLastMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderLastTool(t *testing.T) {
+	tests := []struct {
+		name      string
+		flags     cliFlags
+		toolEnv   string
+		msgEnv    string
+		toggle    bool
+		wantTool  bool
+		wantMsg   bool
+		wantLines int
+	}{
+		{name: "default shows tool", wantTool: true, wantMsg: true, wantLines: 4},
+		{name: "env truthy shows tool", toolEnv: "1", wantTool: true, wantMsg: true, wantLines: 4},
+		{name: "env falsy hides tool", toolEnv: "off", wantMsg: true, wantLines: 3},
+		{name: "flag hides tool", flags: cliFlags{noLastTool: true}, wantMsg: true, wantLines: 3},
+		{name: "flag wins over env", flags: cliFlags{noLastTool: true}, toolEnv: "1", wantMsg: true, wantLines: 3},
+		{name: "both hidden prints no line 3", flags: cliFlags{noLastTool: true, noLastMessage: true}, wantLines: 2},
+		{name: "both env falsy prints no line 3", toolEnv: "no", msgEnv: "0", wantLines: 2},
+		{name: "toggle file hides tool and message", toggle: true, wantLines: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateRenderEnv(t)
+			withFlags(t, tt.flags)
+			t.Setenv("STATUSLINE_LAST_TOOL", tt.toolEnv)
+			t.Setenv("STATUSLINE_LAST_MESSAGE", tt.msgEnv)
+			if tt.toggle {
+				writeToggle(t, filepath.Join(home, ".claude"))
+			}
+			var buf bytes.Buffer
+			render(lineThreeInput(t), &buf)
+			got := buf.String()
+			if has := strings.Contains(got, "tool: Skill(demo)"); has != tt.wantTool {
+				t.Errorf("output %q contains tool = %v, want %v", got, has, tt.wantTool)
+			}
+			if has := strings.Contains(got, "hello fixture message"); has != tt.wantMsg {
+				t.Errorf("output %q contains message = %v, want %v", got, has, tt.wantMsg)
+			}
+			if n := strings.Count(got, "\n"); n != tt.wantLines {
+				t.Errorf("output %q has %d lines, want %d", got, n, tt.wantLines)
+			}
+		})
+	}
+}
