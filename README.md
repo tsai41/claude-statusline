@@ -54,6 +54,7 @@ exiting on a bad flag would leave that UI blank with no way to see why.
 | `--usage-dir <path>` | `STATUSLINE_USAGE_DIR` | Write a per-account rate-limit usage snapshot into this directory on every render that carries `rate_limits` (see below) |
 | `--account-registry <path>` | `STATUSLINE_ACCOUNT_REGISTRY` | Path to a ccs-format accounts registry, overriding the default `~/.config/agent-conversation-handoff/accounts.json` |
 | `--no-account` | `STATUSLINE_ACCOUNT` set to `0` / `false` / `off` / `no` | Hide the account tag |
+| `--no-last-message` | `STATUSLINE_LAST_MESSAGE` set to `0` / `false` / `off` / `no` | Hide the last user message on line 3 (the `tool:` line still shows) |
 
 ### Compact mode (toggle file)
 
@@ -68,7 +69,8 @@ rm ~/.claude/statusline-compact      # show line 3 again
 ```
 
 The file is checked on every refresh, so the change shows on the next one.
-The usage snapshot is still written.
+The usage snapshot is still written. The file combines with
+`--no-last-message`: either one hides the last user message.
 
 ### Usage snapshot (`--usage-dir` / `STATUSLINE_USAGE_DIR`)
 

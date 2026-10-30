@@ -137,6 +137,7 @@ type cliFlags struct {
 	usageDir        string
 	accountRegistry string
 	noAccount       bool
+	noLastMessage   bool
 }
 
 // currentFlags is parsed once in main and consulted by usageDir,
@@ -154,6 +155,7 @@ func parseFlags(args []string) cliFlags {
 	fs.StringVar(&f.usageDir, "usage-dir", "", "override STATUSLINE_USAGE_DIR")
 	fs.StringVar(&f.accountRegistry, "account-registry", "", "override STATUSLINE_ACCOUNT_REGISTRY")
 	fs.BoolVar(&f.noAccount, "no-account", false, "hide the account tag, like STATUSLINE_ACCOUNT=0")
+	fs.BoolVar(&f.noLastMessage, "no-last-message", false, "hide the last user message on line 3, like STATUSLINE_LAST_MESSAGE=0")
 	_ = fs.Parse(args)
 	return f
 }
@@ -185,7 +187,11 @@ func render(input Input, out io.Writer) {
 	go func() { defer wg.Done(); results <- Result{"git", getGitBranch(dir)} }()
 	go func() {
 		defer wg.Done()
-		results <- Result{"message", extractUserMessage(input.TranscriptPath, input.SessionID)}
+		message := ""
+		if !hideLineThree && !lastMessageHidden() {
+			message = extractUserMessage(input.TranscriptPath, input.SessionID)
+		}
+		results <- Result{"message", message}
 	}()
 	go func() {
 		defer wg.Done()
@@ -481,14 +487,23 @@ func registryAccountTag(homeDir, configDir string) string {
 // accountHidden reports whether the account tag should be suppressed:
 // --no-account, or else STATUSLINE_ACCOUNT set to a falsy value.
 func accountHidden() bool {
-	if currentFlags.noAccount {
-		return true
-	}
-	switch strings.ToLower(os.Getenv("STATUSLINE_ACCOUNT")) {
+	return currentFlags.noAccount || envOff("STATUSLINE_ACCOUNT")
+}
+
+// envOff reports whether the named env var is set to a falsy value.
+func envOff(name string) bool {
+	switch strings.ToLower(os.Getenv(name)) {
 	case "0", "false", "off", "no":
 		return true
 	}
 	return false
+}
+
+// lastMessageHidden reports whether line 3's user message should be
+// suppressed: --no-last-message, or else STATUSLINE_LAST_MESSAGE set to a
+// falsy value.
+func lastMessageHidden() bool {
+	return currentFlags.noLastMessage || envOff("STATUSLINE_LAST_MESSAGE")
 }
 
 // accountRegistryPath is the ccs registry file naming known accounts,

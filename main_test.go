@@ -937,20 +937,6 @@ func writeToggle(t *testing.T, dir string) {
 }
 
 func TestRenderCompactMode(t *testing.T) {
-	// fixture is a transcript with one tool call and one user message.
-	fixture := func(t *testing.T) Input {
-		t.Helper()
-		path := filepath.Join(t.TempDir(), "transcript.jsonl")
-		transcript := `{"type":"user","sessionId":"sess-1","message":{"role":"user","content":"hello fixture message"}}` + "\n" +
-			`{"type":"assistant","sessionId":"sess-1","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"demo"}}]}}` + "\n"
-		if err := os.WriteFile(path, []byte(transcript), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		input := goldenInput(t, true)
-		input.TranscriptPath = path
-		input.SessionID = "sess-1"
-		return input
-	}
 	// renderOnce reuses one input so the cwd, which is printed, stays equal.
 	renderOnce := func(t *testing.T, input Input) (string, int) {
 		t.Helper()
@@ -963,7 +949,7 @@ func TestRenderCompactMode(t *testing.T) {
 
 	t.Run("toggle off shows line 3", func(t *testing.T) {
 		isolateRenderEnv(t)
-		got, calls := renderOnce(t, fixture(t))
+		got, calls := renderOnce(t, lineThreeInput(t))
 		if !strings.Contains(got, "tool: Skill(demo)") || !strings.Contains(got, "hello fixture message") {
 			t.Errorf("toggle off output %q lost line 3", got)
 		}
@@ -974,9 +960,9 @@ func TestRenderCompactMode(t *testing.T) {
 
 	t.Run("toggle on hides line 3 and keeps lines 1-2", func(t *testing.T) {
 		home := isolateRenderEnv(t)
-		input := fixture(t)
+		input := lineThreeInput(t)
 		off, _ := renderOnce(t, input)
-		writeToggle(t,filepath.Join(home, ".claude"))
+		writeToggle(t, filepath.Join(home, ".claude"))
 		on, calls := renderOnce(t, input)
 		if strings.Contains(on, "tool:") || strings.Contains(on, "hello fixture message") {
 			t.Errorf("toggle on output %q still has line 3", on)
@@ -994,8 +980,8 @@ func TestRenderCompactMode(t *testing.T) {
 		isolateRenderEnv(t)
 		cfg := t.TempDir()
 		t.Setenv("CLAUDE_CONFIG_DIR", cfg)
-		writeToggle(t,cfg)
-		got, _ := renderOnce(t, fixture(t))
+		writeToggle(t, cfg)
+		got, _ := renderOnce(t, lineThreeInput(t))
 		if strings.Contains(got, "tool:") || strings.Contains(got, "hello fixture message") {
 			t.Errorf("output %q still has line 3 with the toggle in CLAUDE_CONFIG_DIR", got)
 		}
@@ -1009,10 +995,60 @@ func TestRenderCompactMode(t *testing.T) {
 		}
 		// A cwd-relative .claude must not be consulted.
 		cwd := t.TempDir()
-		writeToggle(t,filepath.Join(cwd, ".claude"))
+		writeToggle(t, filepath.Join(cwd, ".claude"))
 		t.Chdir(cwd)
 		if compactModeOn("") {
 			t.Error("compactModeOn(\"\") read a cwd-relative .claude")
 		}
 	})
+}
+
+func lineThreeInput(t *testing.T) Input {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	transcript := `{"type":"user","sessionId":"sess-1","message":{"role":"user","content":"hello fixture message"}}` + "\n" +
+		`{"type":"assistant","sessionId":"sess-1","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"demo"}}]}}` + "\n"
+	if err := os.WriteFile(path, []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	input := goldenInput(t, true)
+	input.TranscriptPath = path
+	input.SessionID = "sess-1"
+	return input
+}
+
+func TestRenderLastMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		flags   cliFlags
+		env     string
+		toggle  bool
+		wantMsg bool
+	}{
+		{name: "default shows message", wantMsg: true},
+		{name: "env truthy shows message", env: "1", wantMsg: true},
+		{name: "env falsy hides message", env: "off", wantMsg: false},
+		{name: "flag hides message", flags: cliFlags{noLastMessage: true}, wantMsg: false},
+		{name: "flag wins over env", flags: cliFlags{noLastMessage: true}, env: "1", wantMsg: false},
+		{name: "toggle file hides message", toggle: true, wantMsg: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolateRenderEnv(t)
+			withFlags(t, tt.flags)
+			t.Setenv("STATUSLINE_LAST_MESSAGE", tt.env)
+			if tt.toggle {
+				writeToggle(t, filepath.Join(home, ".claude"))
+			}
+			var buf bytes.Buffer
+			render(lineThreeInput(t), &buf)
+			got := buf.String()
+			if has := strings.Contains(got, "hello fixture message"); has != tt.wantMsg {
+				t.Errorf("output %q contains message = %v, want %v", got, has, tt.wantMsg)
+			}
+			if wantTool := !tt.toggle; strings.Contains(got, "tool: Skill(demo)") != wantTool {
+				t.Errorf("output %q lost the tool line", got)
+			}
+		})
+	}
 }
