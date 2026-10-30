@@ -55,6 +55,21 @@ exiting on a bad flag would leave that UI blank with no way to see why.
 | `--account-registry <path>` | `STATUSLINE_ACCOUNT_REGISTRY` | Path to a ccs-format accounts registry, overriding the default `~/.config/agent-conversation-handoff/accounts.json` |
 | `--no-account` | `STATUSLINE_ACCOUNT` set to `0` / `false` / `off` / `no` | Hide the account tag |
 
+### Compact mode (toggle file)
+
+Line 3 (the `tool:` line and the last user message) can be hidden on demand
+with a file, not a flag: while `<CLAUDE_CONFIG_DIR>/statusline-compact` exists
+(`~/.claude/statusline-compact` when `CLAUDE_CONFIG_DIR` is unset), line 3 is
+not printed. Lines 1 and 2 are unchanged.
+
+```bash
+touch ~/.claude/statusline-compact   # hide line 3
+rm ~/.claude/statusline-compact      # show line 3 again
+```
+
+The file is checked on every refresh, so the change shows on the next one.
+The usage snapshot is still written.
+
 ### Usage snapshot (`--usage-dir` / `STATUSLINE_USAGE_DIR`)
 
 Rate-limit usage is only ever sent to a live status line render — there is no

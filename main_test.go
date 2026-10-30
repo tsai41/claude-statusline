@@ -866,3 +866,153 @@ func TestFormatMetricsLineWithOnlyAnAccountIsJustTheTag(t *testing.T) {
 		t.Fatalf("formatMetricsLine() = %q, want the tag alone with no separator", got)
 	}
 }
+
+// <CWD> stands for the per-test temp dir.
+const goldenDefaultRender = "\x1b[36m<CWD>\x1b[0m\x1b[2m │ \x1b[0m\x1b[1;35mClaude Test\x1b[0m\n\x1b[32mctx ━━━━┄┄┄┄┄┄ 42%\x1b[0m\x1b[2m │ \x1b[0m\x1b[32m5h: 70%\x1b[0m\x1b[2m (1h30m)\x1b[0m\x1b[2m │ \x1b[0m\x1b[33m7d: 40%\x1b[0m\x1b[2m (2d2h)\x1b[0m\n"
+
+func goldenInput(t *testing.T, withCtx bool) Input {
+	t.Helper()
+	var input Input
+	input.CWD = t.TempDir()
+	input.Model.DisplayName = "Claude Test"
+	if withCtx {
+		input.ContextWindow = &ContextWindow{UsedPercentage: 42}
+	}
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	input.RateLimits = &RateLimits{
+		FiveHour: &RateLimit{UsedPercentage: 30, ResetsAt: float64(fixed.Add(90 * time.Minute).Unix())},
+		SevenDay: &RateLimit{UsedPercentage: 60, ResetsAt: float64(fixed.Add(50 * time.Hour).Unix())},
+	}
+	return input
+}
+
+// isolateRenderEnv points every external input of render at empty temp state
+// and pins the clock, so output depends only on the Input.
+func isolateRenderEnv(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("STATUSLINE_ACCOUNT", "")
+	t.Setenv("STATUSLINE_ACCOUNT_REGISTRY", "")
+	t.Setenv("STATUSLINE_USAGE_DIR", "")
+	withFlags(t, cliFlags{})
+	origNow, origSnap := nowFn, usageSnapshotFn
+	t.Cleanup(func() { nowFn, usageSnapshotFn = origNow, origSnap })
+	nowFn = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
+	usageSnapshotFn = func(Input) {}
+	// The git cache is process-wide and keyed by nothing, so an earlier test's
+	// branch would leak into this render.
+	resetGitCache := func() {
+		cacheMutex.Lock()
+		gitBranchCache, gitBranchExpires = "", time.Time{}
+		cacheMutex.Unlock()
+	}
+	resetGitCache()
+	t.Cleanup(resetGitCache)
+	return home
+}
+
+// Locks the default three-line layout byte for byte; do not edit the constant
+// to make a layout change pass.
+func TestRenderDefaultLayoutGolden(t *testing.T) {
+	isolateRenderEnv(t)
+	input := goldenInput(t, true)
+	var buf bytes.Buffer
+	render(input, &buf)
+	want := strings.ReplaceAll(goldenDefaultRender, "<CWD>", input.CWD)
+	if buf.String() != want {
+		t.Fatalf("render output = %q, want %q", strings.ReplaceAll(buf.String(), input.CWD, "<CWD>"), goldenDefaultRender)
+	}
+}
+
+func writeToggle(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "statusline-compact"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRenderCompactMode(t *testing.T) {
+	// fixture is a transcript with one tool call and one user message.
+	fixture := func(t *testing.T) Input {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		transcript := `{"type":"user","sessionId":"sess-1","message":{"role":"user","content":"hello fixture message"}}` + "\n" +
+			`{"type":"assistant","sessionId":"sess-1","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"demo"}}]}}` + "\n"
+		if err := os.WriteFile(path, []byte(transcript), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		input := goldenInput(t, true)
+		input.TranscriptPath = path
+		input.SessionID = "sess-1"
+		return input
+	}
+	// renderOnce reuses one input so the cwd, which is printed, stays equal.
+	renderOnce := func(t *testing.T, input Input) (string, int) {
+		t.Helper()
+		calls := 0
+		usageSnapshotFn = func(Input) { calls++ }
+		var buf bytes.Buffer
+		render(input, &buf)
+		return buf.String(), calls
+	}
+
+	t.Run("toggle off shows line 3", func(t *testing.T) {
+		isolateRenderEnv(t)
+		got, calls := renderOnce(t, fixture(t))
+		if !strings.Contains(got, "tool: Skill(demo)") || !strings.Contains(got, "hello fixture message") {
+			t.Errorf("toggle off output %q lost line 3", got)
+		}
+		if calls != 1 {
+			t.Errorf("usageSnapshotFn calls = %d, want 1", calls)
+		}
+	})
+
+	t.Run("toggle on hides line 3 and keeps lines 1-2", func(t *testing.T) {
+		home := isolateRenderEnv(t)
+		input := fixture(t)
+		off, _ := renderOnce(t, input)
+		writeToggle(t,filepath.Join(home, ".claude"))
+		on, calls := renderOnce(t, input)
+		if strings.Contains(on, "tool:") || strings.Contains(on, "hello fixture message") {
+			t.Errorf("toggle on output %q still has line 3", on)
+		}
+		firstTwo := func(s string) string { return strings.Join(strings.SplitAfter(s, "\n")[:2], "") }
+		if on != firstTwo(off) || firstTwo(on) != on {
+			t.Errorf("toggle on output = %q, want lines 1-2 of %q", on, off)
+		}
+		if calls != 1 {
+			t.Errorf("usageSnapshotFn calls = %d, want 1", calls)
+		}
+	})
+
+	t.Run("toggle honours CLAUDE_CONFIG_DIR", func(t *testing.T) {
+		isolateRenderEnv(t)
+		cfg := t.TempDir()
+		t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+		writeToggle(t,cfg)
+		got, _ := renderOnce(t, fixture(t))
+		if strings.Contains(got, "tool:") || strings.Contains(got, "hello fixture message") {
+			t.Errorf("output %q still has line 3 with the toggle in CLAUDE_CONFIG_DIR", got)
+		}
+	})
+
+	t.Run("no home and no config dir treats toggle as off", func(t *testing.T) {
+		isolateRenderEnv(t)
+		t.Setenv("HOME", "")
+		if compactModeOn("") {
+			t.Error("compactModeOn(\"\") = true, want false")
+		}
+		// A cwd-relative .claude must not be consulted.
+		cwd := t.TempDir()
+		writeToggle(t,filepath.Join(cwd, ".claude"))
+		t.Chdir(cwd)
+		if compactModeOn("") {
+			t.Error("compactModeOn(\"\") read a cwd-relative .claude")
+		}
+	})
+}

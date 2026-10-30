@@ -175,6 +175,9 @@ func render(input Input, out io.Writer) {
 		dir = input.Workspace.CurrentDir
 	}
 
+	homeDir, _ := os.UserHomeDir()
+	hideLineThree := compactModeOn(homeDir)
+
 	results := make(chan Result, 6)
 	var wg sync.WaitGroup
 	wg.Add(6)
@@ -217,7 +220,6 @@ func render(input Input, out io.Writer) {
 
 	updateSession(input.SessionID)
 
-	homeDir, _ := os.UserHomeDir()
 	shortDir := dir
 	if homeDir != "" {
 		shortDir = strings.Replace(dir, homeDir, "~", 1)
@@ -242,14 +244,27 @@ func render(input Input, out io.Writer) {
 	fmt.Fprintln(out, formatMetricsLine(input, account))
 
 	// third line: special tools + last user message
-	if lastTool != "" {
-		fmt.Fprintf(out, "%s│%s tool: %s\n", ColorDim, ColorReset, lastTool)
-	}
-	if userMessage != "" {
-		fmt.Fprint(out, userMessage)
+	if !hideLineThree {
+		if lastTool != "" {
+			fmt.Fprintf(out, "%s│%s tool: %s\n", ColorDim, ColorReset, lastTool)
+		}
+		if userMessage != "" {
+			fmt.Fprint(out, userMessage)
+		}
 	}
 
 	usageSnapshotFn(input)
+}
+
+// compactModeOn reports whether the toggle file exists, which hides line 3.
+// Its name is a shared contract with the shell alias that creates and removes
+// it.
+func compactModeOn(homeDir string) bool {
+	if homeDir == "" && os.Getenv("CLAUDE_CONFIG_DIR") == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(claudeConfigDir(homeDir), "statusline-compact"))
+	return err == nil
 }
 
 func formatMetricsLine(input Input, account string) string {
@@ -285,6 +300,9 @@ func formatMetricsLine(input Input, account string) string {
 	return strings.Join(line2, SEP)
 }
 
+// nowFn is time.Now, indirected so tests can pin the reset countdown.
+var nowFn = time.Now
+
 // formatResetTime returns the time until reset, or "" if unavailable/past.
 func formatResetTime(resetsAt interface{}) string {
 	var t time.Time
@@ -299,7 +317,7 @@ func formatResetTime(resetsAt interface{}) string {
 	if t.IsZero() {
 		return ""
 	}
-	d := time.Until(t)
+	d := t.Sub(nowFn())
 	if d <= 0 {
 		return ""
 	}
