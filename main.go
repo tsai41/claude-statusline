@@ -57,6 +57,7 @@ type RateLimits struct {
 
 type Input struct {
 	Model struct {
+		ID          string `json:"id"`
 		DisplayName string `json:"display_name"`
 	} `json:"model"`
 	SessionID string `json:"session_id"`
@@ -203,7 +204,7 @@ func render(input Input, out io.Writer) {
 		}
 		results <- Result{"tool", tool}
 	}()
-	go func() { defer wg.Done(); results <- Result{"effort", readEffortLevel()} }()
+	go func() { defer wg.Done(); results <- Result{"effort", readEffortLevel(input.Model.ID)} }()
 	go func() {
 		defer wg.Done()
 		results <- Result{"editwt", detectEditWorktree(input.TranscriptPath, input.SessionID)}
@@ -540,7 +541,7 @@ func claudeConfigDir(homeDir string) string {
 	return filepath.Join(homeDir, ".claude")
 }
 
-func readEffortLevel() string {
+func readEffortLevel(modelID string) string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return ""
@@ -550,13 +551,31 @@ func readEffortLevel() string {
 	if err != nil {
 		return ""
 	}
+	return effortFromSettings(data, modelID)
+}
 
-	var settings map[string]interface{}
+// effortFromSettings prefers modelSettings[<id>].effortLevel over the
+// top-level effortLevel, since a per-model override wins in Claude Code.
+func effortFromSettings(data []byte, modelID string) string {
+	var settings struct {
+		EffortLevel   string `json:"effortLevel"`
+		ModelSettings map[string]struct {
+			EffortLevel string `json:"effortLevel"`
+		} `json:"modelSettings"`
+	}
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return ""
 	}
 
-	effort, _ := settings["effortLevel"].(string)
+	// Ids can carry a context-window suffix such as "[1m]" that settings keys omit.
+	if i := strings.Index(modelID, "["); i >= 0 {
+		modelID = modelID[:i]
+	}
+	effort := settings.EffortLevel
+	if m, ok := settings.ModelSettings[modelID]; ok && m.EffortLevel != "" {
+		effort = m.EffortLevel
+	}
+
 	short := map[string]string{"low": "effort:L", "medium": "effort:M", "high": "effort:H"}
 	if s, ok := short[effort]; ok {
 		return s

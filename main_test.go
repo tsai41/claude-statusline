@@ -189,6 +189,35 @@ func TestReadAccountTagNoTagWithoutAUsableRegistry(t *testing.T) {
 	}
 }
 
+func TestEffortFromSettings(t *testing.T) {
+	settings := `{"effortLevel":"high","modelSettings":{
+		"claude-opus-5-5":{"effortLevel":"medium"},
+		"claude-fable-5-1":{"effortLevel":"high"},
+		"claude-x":{"effortLevel":"xhigh"},
+		"claude-empty":{}}}`
+	tests := []struct {
+		name, data, id, want string
+	}{
+		{"model override", settings, "claude-opus-5-5", "effort:M"},
+		{"override same as top", settings, "claude-fable-5-1", "effort:H"},
+		{"unknown id falls back", settings, "claude-unknown", "effort:H"},
+		{"empty id falls back", settings, "", "effort:H"},
+		{"bracket suffix stripped", settings, "claude-opus-5-5[1m]", "effort:M"},
+		{"unmapped value passes through", settings, "claude-x", "effort:xhigh"},
+		{"override without effort falls back", settings, "claude-empty", "effort:H"},
+		{"no prefix guessing", settings, "claude-opus-5", "effort:H"},
+		{"no effort anywhere hides", `{}`, "claude-opus-5-5", ""},
+		{"invalid json hides", `{`, "claude-opus-5-5", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effortFromSettings([]byte(tt.data), tt.id); got != tt.want {
+				t.Errorf("effortFromSettings(%q) = %q, want %q", tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeResetsAt(t *testing.T) {
 	tests := []struct {
 		name string
