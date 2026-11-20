@@ -24,7 +24,7 @@ A Go-based status line for [Claude Code](https://claude.ai/code).
 
 ```
 ~/go/src/myproject │ ⚡ main +2~1 │ Claude Sonnet 4.6 │ effort:L
-#4 orli │ ctx ━━━━━━━┄┄┄ 23% │ 5h:55% (1h22m) │ 7d:92% (19h50m) │ 1h30m
+ctx ━━┄┄┄┄┄┄┄┄ 23% │ 5h: 55% (1h22m) │ 7d: 92% (19h50m) │ #4 orli
 │ tool: Skill(autopilot)
 │ last message you sent...
 ```
@@ -118,7 +118,7 @@ requires the program that reads these files to exist or be running.
 
 ## Requirements
 
-- Go 1.21+
+- Go 1.26.2+
 - Claude Code
 
 ## Install
