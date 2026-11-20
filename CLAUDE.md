@@ -35,6 +35,13 @@ echo '{"cwd":"'"$PWD"'","model":{"display_name":"Test"}}' | ./claude-statusline
 Add `context_window`, `rate_limits`, `transcript_path`, `session_id` keys to the JSON
 to exercise line 2 / line 3.
 
+## Keeping README.md in sync
+
+README.md is the user-facing doc. When a change alters something README describes — flags or
+`STATUSLINE_*` env vars, which segments render and their format (including the preview lines),
+install path, toolchain/Go version, release flow — update README.md in the same commit. Changes
+README doesn't describe (internals, tests, refactors) don't touch it.
+
 ## Configuration
 
 Flags parsed once in `main()` by `parseFlags` (`flag.NewFlagSet` with `ContinueOnError`, output
